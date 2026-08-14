@@ -77,6 +77,11 @@ final class TTSService: NSObject, ObservableObject {
 
     private override init() {
         super.init()
+
+        // Deixa o iOS gerenciar uma sessão de áudio separada para o TTS.
+        // Evita conflito com microfone, wake word e AVAudioEngine do OpenVision.
+        synthesizer.usesApplicationAudioSession = false
+
         synthesizer.delegate = self
     }
 
