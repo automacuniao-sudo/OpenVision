@@ -84,9 +84,15 @@ final class TTSService: NSObject, ObservableObject {
 
     /// Speak text (single-shot: replaces anything currently playing).
     func speak(_ text: String) {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+
+    if synthesizer.isSpeaking || synthesizer.isPaused {
         stop()
-        enqueue(text)
     }
+
+    enqueue(trimmed)
+}
 
     // MARK: - Streaming (sentence-by-sentence)
 
