@@ -176,7 +176,7 @@ final class GeminiLiveService: ObservableObject {
                 "generationConfig": [
                     "responseModalities": ["AUDIO"],
                     "thinkingConfig": [
-                        "thinkingBudget": 0
+                        "thinkingLevel": "minimal"
                     ]
                 ],
                 "systemInstruction": [
