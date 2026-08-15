@@ -30,33 +30,51 @@ final class NativeToolContext {
 
 enum NativeToolSupport {
 
-    /// Minutes parsed from a clearly RELATIVE time phrase in the user's words, or nil.
-    /// Matches "in 15 minutes", "after 2 hours", "15 minutes from now", "20 min later",
-    /// "in an hour", "in half an hour". A bare "30 minutes" does NOT match — without a relative
-    /// marker it's likelier a duration ("book the room for 30 minutes").
+    /// Minutes parsed from a clearly RELATIVE time phrase in the user's own words.
+    /// Supports the pt-BR phrases used by JARVIS as well as the original English patterns.
+    /// A bare duration ("30 minutos") intentionally does not match because it may mean event length.
     static func relativeMinutes(in command: String) -> Int? {
-        let s = command.lowercased()
-        if s.range(of: #"\b(in|after) half an hour\b"#, options: .regularExpression) != nil { return 30 }
-        if s.range(of: #"\b(in|after) an hour\b"#, options: .regularExpression) != nil { return 60 }
-        // Marker before ("in/after N unit") or after ("N unit from now/later").
-        let pattern = #"\b(?:in|after)\s+(\d+)\s*(minute|min|hour|hr)s?\b|\b(\d+)\s*(minute|min|hour|hr)s?\s+(?:from now|later)\b"#
-        guard let regex = try? NSRegularExpression(pattern: pattern),
-              let m = regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) else { return nil }
-        for (numIdx, unitIdx) in [(1, 2), (3, 4)] {
-            guard let numRange = Range(m.range(at: numIdx), in: s),
-                  let unitRange = Range(m.range(at: unitIdx), in: s),
-                  let n = Int(s[numRange]) else { continue }
-            let isHours = s[unitRange].hasPrefix("h")
-            return isHours ? n * 60 : n
+        let s = command
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        // Common natural one-off forms.
+        let thirtyMinuteForms = ["em meia hora", "daqui a meia hora", "depois de meia hora", "in half an hour", "after half an hour"]
+        if thirtyMinuteForms.contains(where: { s.contains($0) }) { return 30 }
+
+        let oneHourForms = ["em uma hora", "em 1 hora", "daqui a uma hora", "daqui a 1 hora", "depois de uma hora", "in an hour", "after an hour"]
+        if oneHourForms.contains(where: { s.contains($0) }) { return 60 }
+
+        // Marker BEFORE the value: "em 15 minutos", "daqui a 2 horas", "after 20 min".
+        let beforePattern = #"\b(?:em|daqui\s+a|depois\s+de|apos|in|after)\s+(\d+)\s*(minuto|minutos|min|mins|minute|minutes|hora|horas|hour|hours|hr|hrs|h)\b"#
+        if let match = firstNumberAndUnit(pattern: beforePattern, in: s) {
+            return match.isHours ? match.value * 60 : match.value
         }
+
+        // Marker AFTER the value: "15 minutos a partir de agora", "20 min later".
+        let afterPattern = #"\b(\d+)\s*(minuto|minutos|min|mins|minute|minutes|hora|horas|hour|hours|hr|hrs|h)\s+(?:a\s+partir\s+de\s+agora|a\s+contar\s+de\s+agora|from\s+now|later)\b"#
+        if let match = firstNumberAndUnit(pattern: afterPattern, in: s) {
+            return match.isHours ? match.value * 60 : match.value
+        }
+
         return nil
     }
 
-    /// Deterministic time guard: when the user's own words are RELATIVE ("in 15 minutes",
-    /// "15 minutes from now"), rewrite the tool's time args to `minutes_from_now` parsed straight
-    /// from the utterance — overriding whatever absolute time the model computed. Models (small
-    /// ones especially) routinely do "now + 15" wrong; the transcript is ground truth. Returns
-    /// the parsed minutes when the override applied, for logging.
+    private static func firstNumberAndUnit(pattern: String, in text: String) -> (value: Int, isHours: Bool)? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let numberRange = Range(match.range(at: 1), in: text),
+              let unitRange = Range(match.range(at: 2), in: text),
+              let value = Int(text[numberRange]) else { return nil }
+
+        let unit = String(text[unitRange])
+        let isHours = unit.hasPrefix("h") || unit.hasPrefix("hora") || unit.hasPrefix("hour")
+        return (value, isHours)
+    }
+
+    /// Deterministic time guard: when the user's own words are RELATIVE, rewrite the model's
+    /// time args to `minutes_from_now` parsed straight from the transcript. This prevents clock
+    /// arithmetic mistakes and works for both Portuguese and English speech.
     static func applyRelativeTimeGuard(_ args: inout [String: Any], command: String?) -> Int? {
         guard let command, let rel = relativeMinutes(in: command) else { return nil }
         for key in ["hour", "minute", "day_offset", "due_iso8601", "start_iso8601"] {
@@ -88,13 +106,17 @@ enum NativeToolSupport {
         }
     }
 
-    /// Human duration, e.g. "10 minutes", "1 hr 30 min".
+    /// Human duration in pt-BR.
     static func duration(_ seconds: Int) -> String {
-        if seconds < 60 { return "\(seconds) second\(seconds == 1 ? "" : "s")" }
+        if seconds < 60 { return "\(seconds) segundo\(seconds == 1 ? "" : "s")" }
         let m = seconds / 60, s = seconds % 60
-        if m < 60 { return s == 0 ? "\(m) minute\(m == 1 ? "" : "s")" : "\(m) min \(s) sec" }
+        if m < 60 {
+            return s == 0
+                ? "\(m) minuto\(m == 1 ? "" : "s")"
+                : "\(m) min \(s) s"
+        }
         let h = m / 60, rm = m % 60
-        return rm == 0 ? "\(h) hour\(h == 1 ? "" : "s")" : "\(h) hr \(rm) min"
+        return rm == 0 ? "\(h) hora\(h == 1 ? "" : "s")" : "\(h) h \(rm) min"
     }
 
     /// Parse an ISO-8601 timestamp the model provides for a due/start time.
@@ -106,25 +128,23 @@ enum NativeToolSupport {
         if let d = f.date(from: s) { return d }
         // Fall back to a lenient local parse ("2026-07-18 17:00").
         let df = DateFormatter()
+        df.locale = Locale(identifier: "pt_BR")
         df.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
         if let d = df.date(from: s) { return d }
         df.dateFormat = "yyyy-MM-dd HH:mm"
         return df.date(from: s)
     }
 
-    /// Resolve a target Date from tool args, preferring the most reliable source so a small model
+    /// Resolve a target Date from tool args, preferring the most reliable source so the model
     /// never has to do clock arithmetic. Priority:
-    ///   1. Absolute clock time — `hour` (0-23) + optional `minute` + optional `day_offset`
-    ///      (0=today, 1=tomorrow, …). The TOOL does the date math, not the model. If no day is given
-    ///      and the time already passed today, it rolls to the next occurrence (tomorrow).
+    ///   1. Absolute clock time — `hour` (0-23) + optional `minute` + optional `day_offset`.
     ///   2. `minutes_from_now` — a relative offset in minutes.
-    ///   3. `due_iso8601` / `start_iso8601` — an absolute ISO timestamp (last-resort fallback).
-    /// Returns nil if none is present.
+    ///   3. `due_iso8601` / `start_iso8601` — absolute ISO timestamp as last-resort fallback.
     static func resolveDate(from args: [String: Any]) -> Date? {
         let cal = Calendar.current
         let now = Date()
 
-        // 1) Absolute clock time — most reliable, since the model only maps "6 PM" → hour 18.
+        // 1) Absolute clock time.
         if let hour = int(args["hour"]), (0...23).contains(hour) {
             let minute = min(max(int(args["minute"]) ?? 0, 0), 59)
             let dayOffset = int(args["day_offset"]) ?? 0
@@ -134,7 +154,7 @@ enum NativeToolSupport {
             if dayOffset != 0 {
                 date = cal.date(byAdding: .day, value: dayOffset, to: date) ?? date
             } else if date <= now {
-                // "at 6 PM" when it's already past 6 PM → next occurrence.
+                // If no explicit day was given and today's time already passed, use tomorrow.
                 date = cal.date(byAdding: .day, value: 1, to: date) ?? date
             }
             return date
@@ -153,14 +173,20 @@ enum NativeToolSupport {
         return nil
     }
 
-    /// Friendly spoken date/time, e.g. "today at 5:00 PM", "Fri at 9:00 AM".
+    /// Friendly spoken date/time in Brazilian Portuguese.
     static func friendly(_ date: Date) -> String {
         let cal = Calendar.current
-        let time = DateFormatter(); time.dateFormat = "h:mm a"
+        let time = DateFormatter()
+        time.locale = Locale(identifier: "pt_BR")
+        time.dateFormat = "HH:mm"
         let t = time.string(from: date)
-        if cal.isDateInToday(date) { return "today at \(t)" }
-        if cal.isDateInTomorrow(date) { return "tomorrow at \(t)" }
-        let day = DateFormatter(); day.dateFormat = "EEE MMM d"
-        return "\(day.string(from: date)) at \(t)"
+
+        if cal.isDateInToday(date) { return "hoje às \(t)" }
+        if cal.isDateInTomorrow(date) { return "amanhã às \(t)" }
+
+        let day = DateFormatter()
+        day.locale = Locale(identifier: "pt_BR")
+        day.dateFormat = "EEE, d 'de' MMM"
+        return "\(day.string(from: date)) às \(t)"
     }
 }
