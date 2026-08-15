@@ -268,7 +268,9 @@ final class GeminiLiveService: ObservableObject {
         lastUserSpeechEnd = Date()
     }
 
-    /// Send text message to Gemini
+    /// Send text message to Gemini 3.1 Live.
+    /// Gemini 3.1 only supports clientContent for seeding initial history;
+    /// conversational text turns must use realtimeInput.text.
     func sendText(_ text: String) async throws {
         guard connectionState.isUsable else {
             throw AIBackendError.notConnected
@@ -277,14 +279,8 @@ final class GeminiLiveService: ObservableObject {
         NativeToolContext.shared.set(text)
 
         let message: [String: Any] = [
-            "clientContent": [
-                "turns": [
-                    [
-                        "role": "user",
-                        "parts": [["text": text]]
-                    ]
-                ],
-                "turnComplete": true
+            "realtimeInput": [
+                "text": text
             ]
         ]
 
