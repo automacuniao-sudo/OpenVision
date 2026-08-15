@@ -31,6 +31,12 @@ final class GeminiLiveService: ObservableObject {
         SettingsManager.shared.settings.geminiVideoFPS
     }
 
+    private var voiceName: String {
+        let configured = SettingsManager.shared.settings.geminiVoiceName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return configured.isEmpty ? "Charon" : configured
+    }
+
     // MARK: - Callbacks
 
     var onTextReceived: ((String) -> Void)?
@@ -84,7 +90,7 @@ final class GeminiLiveService: ObservableObject {
 
         connectionState = .connecting
         onConnectionStateChanged?(connectionState)
-        DiagnosticLogger.shared.log("Gemini", "Connecting model=\(Constants.GeminiLive.modelName)")
+        DiagnosticLogger.shared.log("Gemini", "Connecting model=\(Constants.GeminiLive.modelName) voice=\(voiceName)")
 
         do {
             let url = buildWebSocketURL()
@@ -197,6 +203,13 @@ final class GeminiLiveService: ObservableObject {
                 "model": Constants.GeminiLive.modelName,
                 "generationConfig": [
                     "responseModalities": ["AUDIO"],
+                    "speechConfig": [
+                        "voiceConfig": [
+                            "prebuiltVoiceConfig": [
+                                "voiceName": voiceName
+                            ]
+                        ]
+                    ],
                     "thinkingConfig": [
                         "thinkingLevel": "minimal"
                     ]
@@ -223,7 +236,7 @@ final class GeminiLiveService: ObservableObject {
             ]
         ]
 
-        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO + pt-BR system instruction")
+        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO voice=\(voiceName) + pt-BR JARVIS instruction")
         try await sendJSON(setup)
     }
 
@@ -231,17 +244,29 @@ final class GeminiLiveService: ObservableObject {
     private func buildSystemPrompt() -> String {
         let now = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withInternetDateTime])
         var prompt = """
-        You are a helpful AI assistant integrated with smart glasses. You can see what the user sees through their glasses camera.
+        Your name is JARVIS. You are the user's personal AI assistant for Project JARVIS, integrated with their iPhone and smart glasses. Do not present yourself as Gemini or as a generic virtual assistant. If the user asks who or what JARVIS is, explain naturally that J.A.R.V.I.S. from Iron Man is the fictional inspiration for the name and concept, while you are this user's real personal-assistant project — you are not the fictional Stark system.
 
-        Keep responses concise and conversational - the user is wearing glasses and expects quick, natural interactions.
+        You can see what the user sees when a glasses/camera stream is actually available. Never pretend you can currently see something if no image or video frame was provided.
+
+        Keep responses concise, natural, and conversational. The user is using JARVIS hands-free and expects quick answers.
 
         RESPOND IN BRAZILIAN PORTUGUESE (pt-BR). YOU MUST RESPOND UNMISTAKABLY IN BRAZILIAN PORTUGUESE unless the user explicitly asks for another language.
 
         The current date and time is \(now) in the user's local time zone. Base any time on this.
 
-        You can handle productivity hands-free by calling the matching tool: set_timer, start_pomodoro, create_reminder, calendar (read/add events), note (save/search/list notes auto-tagged with place and time), copy_to_clipboard, and search_docs (search the user's imported manuals/recipes/guides — use it whenever they ask about their documents, and answer only from what it returns). For a specific time of day (e.g. "6pm", "9:30am") pass the tool's hour (24-hour form) and minute, plus day_offset (0=today, 1=tomorrow) — let the tool do the date math. Use minutes_from_now only for "in N minutes / from now". After a tool runs, briefly confirm what you did in one sentence.
+        IMPORTANT: when the user asks JARVIS to perform an iPhone action that has a matching tool, CALL THE TOOL instead of merely explaining how to do it.
 
-        If the user asks you to do something beyond your capabilities, explain what you can help with instead.
+        Available on-device actions include:
+        - device_status: read the real iPhone battery percentage, charging state, Low Power Mode, and iOS version. Use it for questions like "quanto de bateria eu tenho?".
+        - calendar: manage the real Apple Calendar. Use action today/upcoming/add/update/delete for requests involving agenda, calendário, compromissos, reuniões or eventos.
+        - create_reminder: manage the real Apple Reminders app. It supports create/list/update/delete. Use it whenever the user asks about lembretes.
+        - set_timer and start_pomodoro: local timed notifications.
+        - note: JARVIS INTERNAL notes only (save/search/list). This is NOT Apple Notes. Never claim that `note` created or edited a note in Apple's Notes app. Apple Notes integration is not available in this build yet.
+        - copy_to_clipboard and search_docs as appropriate.
+
+        For calendar/reminder clock times (for example "18 horas", "9:30", "amanhã às 14"), pass hour in 24-hour form, minute, and day_offset. For relative requests such as "daqui a 15 minutos", use minutes_from_now. Let the native tool do date arithmetic. After a tool runs, briefly confirm the actual result; never claim success if the tool returned an error or permission problem.
+
+        If the user asks you to do something beyond the currently available tools, clearly say what is not yet integrated instead of pretending it was done.
         """
 
         // Add user's custom instructions
@@ -263,7 +288,8 @@ final class GeminiLiveService: ObservableObject {
     }
 
     /// Build tool declarations: the on-device productivity tools (timers, reminders, calendar,
-    /// notes, clipboard). Gemini nests function declarations under `tools: [{functionDeclarations:[…]}]`.
+    /// notes, clipboard, device status). Gemini nests function declarations under
+    /// `tools: [{functionDeclarations:[…]}]`.
     private func buildToolDeclarations() -> [[String: Any]] {
         [["functionDeclarations": NativeToolRegistry.shared.geminiDeclarations]]
     }
@@ -434,23 +460,15 @@ final class GeminiLiveService: ObservableObject {
         }
     }
 
-    /// Handle server content
+    /// Handle server content. Process ALL sibling fields before honoring turnComplete because
+    /// Gemini 3.1 can deliver modelTurn/transcription and turnComplete in the same server event.
     private func handleServerContent(_ content: [String: Any]) {
-        // Check if turn complete
-        if content["turnComplete"] as? Bool == true {
-            isModelSpeaking = false
-            isProcessing = false
-            DiagnosticLogger.shared.log("Gemini", "Turn complete")
-            onTurnComplete?()
-            return
-        }
-
-        // Check if interrupted
+        // Interrupted content should stop queued audio immediately.
         if content["interrupted"] as? Bool == true {
             isModelSpeaking = false
             isProcessing = false
             fallbackAudioPlayback.stop()
-            return
+            DiagnosticLogger.shared.log("Gemini", "Server content interrupted")
         }
 
         // Model turn
@@ -485,9 +503,11 @@ final class GeminiLiveService: ObservableObject {
                                 try fallbackAudioPlayback.setup()
                                 fallbackAudioReady = true
                                 print("[GeminiLive] Normal voice playback ready")
+                                DiagnosticLogger.shared.log("GeminiAudio", "Normal voice playback ready")
                             } catch {
                                 lastError = "Audio playback setup failed: \(error.localizedDescription)"
                                 print("[GeminiLive] \(lastError ?? "Audio playback setup failed")")
+                                DiagnosticLogger.shared.log("GeminiAudio", lastError ?? "Audio playback setup failed")
                             }
                         }
                         if fallbackAudioReady {
@@ -496,8 +516,8 @@ final class GeminiLiveService: ObservableObject {
                     }
                 }
 
-                // Text (transcription)
-                if let text = part["text"] as? String {
+                // Text (some model events put transcript text directly in a part).
+                if let text = part["text"] as? String, !text.isEmpty {
                     onOutputTranscription?(text)
                 }
             }
@@ -512,8 +532,16 @@ final class GeminiLiveService: ObservableObject {
 
         // Input transcription
         if let inputTranscription = content["inputTranscription"] as? [String: Any],
-           let text = inputTranscription["text"] as? String {
+           let text = inputTranscription["text"] as? String, !text.isEmpty {
             onInputTranscription?(text)
+        }
+
+        // Turn complete comes LAST so we never discard sibling audio/transcription fields.
+        if content["turnComplete"] as? Bool == true {
+            isModelSpeaking = false
+            isProcessing = false
+            DiagnosticLogger.shared.log("Gemini", "Turn complete")
+            onTurnComplete?()
         }
     }
 
@@ -540,6 +568,7 @@ final class GeminiLiveService: ObservableObject {
             try await sendJSON(["toolResponse": ["functionResponses": responses]])
         } catch {
             print("[GeminiLive] Failed to send toolResponse: \(error)")
+            DiagnosticLogger.shared.log("Tool", "Failed to send toolResponse: \(error.localizedDescription)")
         }
     }
 
