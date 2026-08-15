@@ -57,6 +57,7 @@ final class AudioPlaybackService: ObservableObject {
 
         try engine.start()
         print("[AudioPlayback] Engine started")
+        DiagnosticLogger.shared.log("Audio", "Playback engine started format=\(outputFormat.sampleRate)Hz/\(outputFormat.channelCount)ch")
     }
 
     /// Teardown audio engine
@@ -72,8 +73,10 @@ final class AudioPlaybackService: ObservableObject {
 
     /// Play PCM Int16 audio data
     func playAudio(data: Data) {
+        DiagnosticLogger.shared.log("Audio", "playAudio bytes=\(data.count)")
         guard let engine = audioEngine, let player = playerNode else {
             print("[AudioPlayback] Engine not setup")
+            DiagnosticLogger.shared.log("Audio", "ERROR: playback engine not setup")
             return
         }
 

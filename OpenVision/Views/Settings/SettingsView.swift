@@ -116,6 +116,12 @@ struct SettingsView: View {
                         Label("My Documents", systemImage: "books.vertical")
                     }
 
+                    NavigationLink {
+                        DiagnosticsView()
+                    } label: {
+                        Label("Diagnostics / Logs", systemImage: "waveform.path.ecg")
+                    }
+
                     Toggle(isOn: $settingsManager.settings.autoReconnect) {
                         Label("Auto-Reconnect", systemImage: "arrow.triangle.2.circlepath")
                     }

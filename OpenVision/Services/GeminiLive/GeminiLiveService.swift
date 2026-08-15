@@ -84,6 +84,7 @@ final class GeminiLiveService: ObservableObject {
 
         connectionState = .connecting
         onConnectionStateChanged?(connectionState)
+        DiagnosticLogger.shared.log("Gemini", "Connecting model=\(Constants.GeminiLive.modelName)")
 
         do {
             let url = buildWebSocketURL()
@@ -129,11 +130,13 @@ final class GeminiLiveService: ObservableObject {
             connectionState = .connected
             onConnectionStateChanged?(connectionState)
             print("[GeminiLive] Connected")
+            DiagnosticLogger.shared.log("Gemini", "Connected and setup complete")
 
         } catch {
             lastError = error.localizedDescription
             connectionState = .failed(error.localizedDescription)
             onConnectionStateChanged?(connectionState)
+            DiagnosticLogger.shared.log("Gemini", "Connect failed: \(error.localizedDescription)")
             closeWebSocket()
             throw error
         }
@@ -144,6 +147,7 @@ final class GeminiLiveService: ObservableObject {
         guard connectionState != .disconnected else { return }
 
         print("[GeminiLive] Disconnecting")
+        DiagnosticLogger.shared.log("Gemini", "Disconnecting")
         connectionState = .disconnected
         onConnectionStateChanged?(connectionState)
         closeWebSocket()
@@ -219,6 +223,7 @@ final class GeminiLiveService: ObservableObject {
             ]
         ]
 
+        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO + pt-BR system instruction")
         try await sendJSON(setup)
     }
 
@@ -229,6 +234,8 @@ final class GeminiLiveService: ObservableObject {
         You are a helpful AI assistant integrated with smart glasses. You can see what the user sees through their glasses camera.
 
         Keep responses concise and conversational - the user is wearing glasses and expects quick, natural interactions.
+
+        RESPOND IN BRAZILIAN PORTUGUESE (pt-BR). YOU MUST RESPOND UNMISTAKABLY IN BRAZILIAN PORTUGUESE unless the user explicitly asks for another language.
 
         The current date and time is \(now) in the user's local time zone. Base any time on this.
 
@@ -302,6 +309,7 @@ final class GeminiLiveService: ObservableObject {
             ]
         ]
 
+        DiagnosticLogger.shared.log("Gemini", "Sending text turn: \(text)")
         try await sendJSON(message)
     }
 
@@ -366,6 +374,7 @@ final class GeminiLiveService: ObservableObject {
                 } catch {
                     if !Task.isCancelled {
                         print("[GeminiLive] Receive error: \(error)")
+                        DiagnosticLogger.shared.log("Gemini", "Receive error: \(error.localizedDescription)")
                         await self.handleDisconnect()
                     }
                     break
@@ -384,6 +393,7 @@ final class GeminiLiveService: ObservableObject {
         // Setup complete
         if json["setupComplete"] != nil {
             isSetupComplete = true
+            DiagnosticLogger.shared.log("Gemini", "Received setupComplete")
             return
         }
 
@@ -430,6 +440,7 @@ final class GeminiLiveService: ObservableObject {
         if content["turnComplete"] as? Bool == true {
             isModelSpeaking = false
             isProcessing = false
+            DiagnosticLogger.shared.log("Gemini", "Turn complete")
             onTurnComplete?()
             return
         }
@@ -461,6 +472,7 @@ final class GeminiLiveService: ObservableObject {
 
                     isModelSpeaking = true
                     isProcessing = true
+                    DiagnosticLogger.shared.log("GeminiAudio", "Received PCM chunk bytes=\(audioData.count)")
 
                     if let onAudioReceived {
                         // Live Video mode owns playback through the ViewModel.
@@ -494,6 +506,7 @@ final class GeminiLiveService: ObservableObject {
         // Output transcription can be delivered alongside modelTurn as a sibling field.
         if let outputTranscription = content["outputTranscription"] as? [String: Any],
            let text = outputTranscription["text"] as? String, !text.isEmpty {
+            DiagnosticLogger.shared.log("Gemini", "Output transcript: \(text)")
             onOutputTranscription?(text)
         }
 

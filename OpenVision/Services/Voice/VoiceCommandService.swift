@@ -84,7 +84,7 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Speech Recognition
 
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "pt-BR"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
 
@@ -224,6 +224,7 @@ final class VoiceCommandService: ObservableObject {
         isListening = true
         state = isWakeWordEnabled ? .idle : .listening
         print("[VoiceCommand] Started listening - audio engine running")
+        DiagnosticLogger.shared.log("Voice", "Recognizer started locale=pt-BR state=\(state) route=\(AudioSessionManager.shared.currentRouteDescription)")
     }
 
     /// Prime the recognizer for the wake phrase and short-phrase detection. `contextualStrings`
@@ -232,7 +233,9 @@ final class VoiceCommandService: ObservableObject {
     /// (short phrase) beats `.dictation` (long-form) for a quick wake word + command.
     private func configureRecognitionRequest(_ request: SFSpeechAudioBufferRecognitionRequest) {
         request.shouldReportPartialResults = true
-        request.taskHint = .search
+        // Short-phrase search while idle for the wake word; full dictation once activated.
+        // Using .search for normal questions was hurting Brazilian Portuguese/place-name accuracy.
+        request.taskHint = state == .idle ? .search : .dictation
         var phrases = ["Ok Vision", "Okay Vision", "Hey Vision", "Vision"]
         if !wakeWord.isEmpty { phrases.insert(wakeWord, at: 0) }
         request.contextualStrings = phrases
@@ -305,10 +308,11 @@ final class VoiceCommandService: ObservableObject {
 
     /// Enter conversation mode (no wake word needed for follow-ups)
     func enterConversationMode() {
-        // Restart recognition to clear accumulated transcription
+        // Set the state BEFORE rebuilding recognition so configureRecognitionRequest uses
+        // dictation rather than wake-word search for follow-up questions.
+        state = .conversationMode
         restartRecognition()
 
-        state = .conversationMode
         hasSpokenThisTurn = false
         currentTranscription = ""
 
@@ -407,10 +411,19 @@ final class VoiceCommandService: ObservableObject {
         print("[VoiceCommand] Exited conversation mode")
     }
 
-    /// Start conversation timeout (auto-exit after silence)
+    /// Start conversation timeout using the user's Voice settings. A value of 0 means Never.
     private func startConversationTimeout() {
         conversationTimeoutTimer?.invalidate()
-        conversationTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { [weak self] _ in
+        conversationTimeoutTimer = nil
+
+        let timeout = SettingsManager.shared.settings.conversationTimeout
+        if timeout <= 0 {
+            DiagnosticLogger.shared.log("Voice", "Conversation auto-end disabled (Never)")
+            return
+        }
+
+        DiagnosticLogger.shared.log("Voice", "Conversation auto-end armed for \(Int(timeout))s")
+        conversationTimeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 self?.handleConversationTimeout()
             }
@@ -427,6 +440,7 @@ final class VoiceCommandService: ObservableObject {
         } else {
             // No speech detected, exit conversation mode
             print("[VoiceCommand] Conversation timeout - no speech detected")
+            DiagnosticLogger.shared.log("Voice", "Conversation timeout fired")
             exitConversationMode()
             onConversationTimeout?()
         }
@@ -455,6 +469,7 @@ final class VoiceCommandService: ObservableObject {
 
         let transcription = result.bestTranscription.formattedString
         print("[VoiceCommand] 🎤 heard(\(state)): \"\(transcription)\"")
+        DiagnosticLogger.shared.log("STT", "heard[\(state)]: \(transcription)")
 
         switch state {
         case .idle:
@@ -641,6 +656,7 @@ final class VoiceCommandService: ObservableObject {
     /// Handle wake word detection
     private func handleWakeWordDetected() {
         print("[VoiceCommand] Wake word detected!")
+        DiagnosticLogger.shared.log("Voice", "Wake word detected: \(wakeWord)")
 
         // Activate cooldown
         wakeWordCooldownActive = true
@@ -653,9 +669,10 @@ final class VoiceCommandService: ObservableObject {
             playActivation()
         }
 
-        // Transition to listening
+        // Transition to listening and rebuild recognition in dictation mode.
         state = .listening
         currentTranscription = ""
+        restartRecognition()
 
         // Start command timeout
         startCommandTimeout()
@@ -679,6 +696,7 @@ final class VoiceCommandService: ObservableObject {
         guard !command.isEmpty else { return }
 
         print("[VoiceCommand] Command captured: \(command)")
+        DiagnosticLogger.shared.log("Voice", "Command captured: \(command)")
 
         state = .processing
         silenceTimer?.invalidate()
