@@ -1,0 +1,147 @@
+name: Apply JARVIS build 15 conversation fixes
+
+on:
+  push:
+    branches:
+      - build15-conversation-patch
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout jarvis-dev
+        uses: actions/checkout@v4
+        with:
+          ref: jarvis-dev
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Apply build 15 fixes
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected 1 match, found {count}\n--- OLD ---\n{old}")
+              p.write_text(text.replace(old, new, 1))
+              print(f"patched {path}")
+
+          # 1) Reliable PCM queue completion so Gemini turn completion can wait until sound is actually done.
+          path = "OpenVision/Services/Audio/AudioPlaybackService.swift"
+          replace_once(path,
+          '''    private var audioEngine: AVAudioEngine?\n    private var playerNode: AVAudioPlayerNode?\n''',
+          '''    private var audioEngine: AVAudioEngine?\n    private var playerNode: AVAudioPlayerNode?\n\n    /// AVAudioPlayerNode stays `isPlaying == true` even after its scheduled queue drains, so track\n    /// our own queue depth. This is also generation-tagged so completion callbacks from buffers\n    /// canceled by `stop()` cannot accidentally announce that a newer reply finished.\n    private var scheduledBufferCount = 0\n    private var playbackGeneration = 0\n''')
+
+          replace_once(path,
+          '''        audioEngine?.stop()\n        audioEngine = nil\n        playerNode = nil\n        isPlaying = false\n''',
+          '''        playbackGeneration += 1\n        scheduledBufferCount = 0\n        audioEngine?.stop()\n        audioEngine = nil\n        playerNode = nil\n        isPlaying = false\n''')
+
+          replace_once(path,
+          '''        // Schedule and play\n        player.scheduleBuffer(buffer) { [weak self] in\n            Task { @MainActor in\n                // Check if more audio is queued\n                if self?.playerNode?.isPlaying == false {\n                    self?.isPlaying = false\n                    self?.onPlaybackComplete?()\n                }\n            }\n        }\n\n        if !player.isPlaying {\n            player.play()\n        }\n\n        isPlaying = true\n''',
+          '''        // Schedule and play. Track queue depth ourselves: AVAudioPlayerNode.isPlaying\n        // describes the node state, not whether any buffers remain queued.\n        let generation = playbackGeneration\n        scheduledBufferCount += 1\n        player.scheduleBuffer(buffer) { [weak self] in\n            Task { @MainActor in\n                guard let self, generation == self.playbackGeneration else { return }\n                self.scheduledBufferCount = max(0, self.scheduledBufferCount - 1)\n                if self.scheduledBufferCount == 0 {\n                    self.isPlaying = false\n                    DiagnosticLogger.shared.log("Audio", "Playback queue drained")\n                    self.onPlaybackComplete?()\n                }\n            }\n        }\n\n        if !player.isPlaying {\n            player.play()\n        }\n\n        isPlaying = true\n''')
+
+          replace_once(path,
+          '''    func stop() {\n        playerNode?.stop()\n        isPlaying = false\n    }\n''',
+          '''    func stop() {\n        playbackGeneration += 1\n        scheduledBufferCount = 0\n        playerNode?.stop()\n        isPlaying = false\n        DiagnosticLogger.shared.log("Audio", "Playback stopped / queue cleared")\n    }\n''')
+
+          # 2) Gemini normal voice: keep speaking state until PCM drains and suppress old audio on barge-in.
+          path = "OpenVision/Services/GeminiLive/GeminiLiveService.swift"
+          replace_once(path,
+          '''    private let fallbackAudioPlayback = AudioPlaybackService()\n    private var fallbackAudioReady = false\n''',
+          '''    private let fallbackAudioPlayback = AudioPlaybackService()\n    private var fallbackAudioReady = false\n    private var pendingTurnComplete = false\n    private var discardIncomingAudio = false\n    private var ignoreNextTurnComplete = false\n''')
+
+          replace_once(path,
+          '''    private init() {}\n''',
+          '''    private init() {\n        // A Gemini server turn can finish before the last locally queued PCM buffer is audible.\n        // Finalize the conversational turn only when that queue really drains.\n        fallbackAudioPlayback.onPlaybackComplete = { [weak self] in\n            guard let self, self.pendingTurnComplete else { return }\n            DiagnosticLogger.shared.log("Gemini", "PCM drained; finalizing deferred turn")\n            self.finishTurn()\n        }\n    }\n''')
+
+          replace_once(path,
+          '''        isSetupComplete = false\n        isModelSpeaking = false\n''',
+          '''        isSetupComplete = false\n        isModelSpeaking = false\n        pendingTurnComplete = false\n        discardIncomingAudio = false\n        ignoreNextTurnComplete = false\n''')
+
+          replace_once(path,
+          '''        // Record the utterance for the tool registry's relative-time guard.\n        NativeToolContext.shared.set(text)\n\n        let message: [String: Any] = [\n''',
+          '''        // Record the utterance for the tool registry's relative-time guard.\n        NativeToolContext.shared.set(text)\n\n        // If this text is a barge-in follow-up, resume accepting model audio now. With automatic\n        // activity detection enabled, realtimeInput.text itself counts as user activity and the\n        // server's START_OF_ACTIVITY_INTERRUPTS policy cuts off the previous model response.\n        discardIncomingAudio = false\n\n        let message: [String: Any] = [\n''')
+
+          replace_once(path,
+          '''    /// Interrupt the AI (barge-in support)\n    func interrupt() async {\n        // Send interrupt signal if model is speaking\n        guard isModelSpeaking else { return }\n\n        isModelSpeaking = false\n        isProcessing = false\n        fallbackAudioPlayback.stop()\n        print("[GeminiLive] Interrupted")\n    }\n''',
+          '''    /// Interrupt local playback immediately for barge-in. The next realtimeInput.text\n    /// is user activity and asks Gemini's START_OF_ACTIVITY_INTERRUPTS policy to cut the server turn.\n    /// Until that next user turn is sent, discard late PCM chunks from the response we just silenced.\n    func interrupt() async {\n        guard isModelSpeaking || isProcessing || fallbackAudioPlayback.isPlaying else { return }\n\n        pendingTurnComplete = false\n        ignoreNextTurnComplete = true\n        discardIncomingAudio = true\n        isModelSpeaking = false\n        isProcessing = false\n        fallbackAudioPlayback.stop()\n        DiagnosticLogger.shared.log("Gemini", "Local barge-in: playback stopped; old PCM suppressed")\n        print("[GeminiLive] Interrupted")\n    }\n''')
+
+          replace_once(path,
+          '''        if content["interrupted"] as? Bool == true {\n            isModelSpeaking = false\n            isProcessing = false\n            fallbackAudioPlayback.stop()\n            DiagnosticLogger.shared.log("Gemini", "Server content interrupted")\n        }\n''',
+          '''        if content["interrupted"] as? Bool == true {\n            pendingTurnComplete = false\n            ignoreNextTurnComplete = false\n            isModelSpeaking = false\n            isProcessing = false\n            fallbackAudioPlayback.stop()\n            DiagnosticLogger.shared.log("Gemini", "Server content interrupted")\n        }\n''')
+
+          replace_once(path,
+          '''                    isModelSpeaking = true\n                    isProcessing = true\n                    DiagnosticLogger.shared.log("GeminiAudio", "Received PCM chunk bytes=\\(audioData.count)")\n\n                    if let onAudioReceived {\n''',
+          '''                    // After a local barge-in, late chunks from the old response can still\n                    // arrive until the next user realtimeInput reaches Gemini. Never let them restart\n                    // audio the user explicitly stopped.\n                    if discardIncomingAudio {\n                        DiagnosticLogger.shared.log("GeminiAudio", "Discarded old PCM chunk bytes=\\(audioData.count)")\n                        continue\n                    }\n\n                    isModelSpeaking = true\n                    isProcessing = true\n                    DiagnosticLogger.shared.log("GeminiAudio", "Received PCM chunk bytes=\\(audioData.count)")\n\n                    if let onAudioReceived {\n''')
+
+          replace_once(path,
+          '''        // Turn complete comes LAST so we never discard sibling audio/transcription fields.\n        if content["turnComplete"] as? Bool == true {\n            isModelSpeaking = false\n            isProcessing = false\n            DiagnosticLogger.shared.log("Gemini", "Turn complete")\n            onTurnComplete?()\n        }\n    }\n\n    /// Handle a tool call from Gemini: run each requested native tool and send the results back as a\n''',
+          '''        // Turn complete comes LAST so we never discard sibling audio/transcription fields.\n        if content["turnComplete"] as? Bool == true {\n            // A locally interrupted response may still report its final boundary. Consume that\n            // boundary without reopening conversation mode in the middle of the user's barge-in.\n            if ignoreNextTurnComplete {\n                ignoreNextTurnComplete = false\n                pendingTurnComplete = false\n                isModelSpeaking = false\n                isProcessing = false\n                DiagnosticLogger.shared.log("Gemini", "Ignored turnComplete for interrupted response")\n                return\n            }\n\n            isProcessing = false\n            if onAudioReceived == nil && fallbackAudioReady && fallbackAudioPlayback.isPlaying {\n                // Normal wake-word mode: server generation is done, but local PCM is still audible.\n                // Defer the conversation timeout/listening state until the actual speaker queue drains.\n                pendingTurnComplete = true\n                DiagnosticLogger.shared.log("Gemini", "Server turn complete; waiting for PCM drain")\n            } else {\n                finishTurn()\n            }\n        }\n    }\n\n    private func finishTurn() {\n        pendingTurnComplete = false\n        isModelSpeaking = false\n        isProcessing = false\n        DiagnosticLogger.shared.log("Gemini", "Turn complete")\n        onTurnComplete?()\n    }\n\n    /// Handle a tool call from Gemini: run each requested native tool and send the results back as a\n''')
+
+          # 3) Voice recognizer: permit "Jarvis, ..." as an explicit mid-response barge-in.
+          path = "OpenVision/Services/Voice/VoiceCommandService.swift"
+          replace_once(path,
+          '''            for ww in [wakeWord.lowercased(), "ok vision", "okay vision", "hey vision", "hi vision"] {\n''',
+          '''            for ww in [wakeWord.lowercased(), "ok jarvis", "okay jarvis", "hey jarvis", "jarvis", "ok vision", "okay vision", "hey vision", "hi vision"] {\n''')
+
+          old_block = '''            if allowInterrupt && detectWakeWord(in: transcription, bypassCooldown: true)\n                && wakeWordAtStart(transcription) {\n                // A BARE "Ok Vision" with nothing after it, mid-reply, is almost always the mic\n                // hallucinating the wake word from the reply audio the speaker is playing (echo) —\n                // NOT a deliberate interrupt. Real interrupts carry a follow-up ("Ok Vision, what\n                // about Mars?"). Require that command; otherwise ignore and let the reply finish.\n                // (To simply silence a reply, "Ok Vision stop" is handled by the stop-phrase branch\n                // above.)\n                let command = extractCommandAfterWakeWord(transcription)\n                guard !command.isEmpty else { return }\n\n                print("[VoiceCommand] Wake word + command during TTS - interrupting: '\\(command)'")\n\n                // Notify to stop TTS immediately\n                onWakeWordDetected?()\n\n                // Switch to listening mode - like xmeta's isCapturingCommand = true\n                state = .listening\n                currentTranscription = command\n                hasSpokenThisTurn = true\n\n                // Start silence timer to wait for user to finish speaking\n                resetSilenceTimer()\n\n                // If result is already final, process it\n                if result.isFinal {\n                    print("[VoiceCommand] Result is final, processing command immediately")\n                    handleCommandComplete(command)\n                }\n                return\n            }\n'''
+          new_block = '''            if allowInterrupt, interruptPrefixAtStart(transcription) != nil {\n                // During an active reply accept either the configured wake phrase OR the shorter\n                // assistant name ("Jarvis"). This gives a natural barge-in: "Jarvis, pare" or\n                // "Jarvis, e quando ele voltou ao Santos?" without waiting for the reply to finish.\n                let command = extractCommandAfterInterruptPrefix(transcription)\n                print("[VoiceCommand] JARVIS barge-in detected: '\\(command)'")\n\n                // Stop output/model generation immediately. Keep this recognizer task alive: once\n                // state becomes .listening, later partials of the SAME utterance keep building the\n                // follow-up instead of making the user repeat it.\n                onInterruption?()\n                state = .listening\n                currentTranscription = command\n                hasSpokenThisTurn = !command.isEmpty\n                resetSilenceTimer()\n\n                if result.isFinal && !command.isEmpty {\n                    print("[VoiceCommand] Barge-in result final, processing command immediately")\n                    handleCommandComplete(command)\n                }\n                return\n            }\n'''
+          replace_once(path, old_block, new_block)
+
+          replace_once(path,
+          '''    private func isStopPhrase(_ text: String) -> Bool {\n        guard detectWakeWord(in: text, bypassCooldown: true) else { return false }\n        let lower = text.lowercased()\n        if lower.contains("video") || lower.contains("stream") { return false }\n        let stopWords = ["stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel"]\n        return stopWords.contains { lower.contains($0) }\n    }\n\n    /// True when a wake-word variation sits at (or very near) the START of the transcript — i.e. a\n''',
+          '''    private func isStopPhrase(_ text: String) -> Bool {\n        // Require a JARVIS/wake prefix so the assistant's own Portuguese audio cannot false-trigger\n        // on common words such as "para". Users can say "Jarvis, pare", "Ok Jarvis, silêncio", etc.\n        guard interruptPrefixAtStart(text) != nil else { return false }\n        let lower = text.lowercased()\n        if lower.contains("video") || lower.contains("stream") { return false }\n        let stopWords = [\n            "stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel",\n            "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "chega", "cancela", "cancelar"\n        ]\n        return stopWords.contains { lower.contains($0) }\n    }\n\n    /// Prefix accepted specifically while JARVIS is speaking. Idle wake-word detection remains\n    /// governed by the configured wake phrase; only mid-response barge-in also accepts bare "Jarvis".\n    private func interruptPrefixAtStart(_ text: String) -> String? {\n        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)\n        let prefixes = [\n            wakeWord.lowercased(),\n            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",\n            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"\n        ]\n        return prefixes.first { !$0.isEmpty && lower.hasPrefix($0) }\n    }\n\n    private func extractCommandAfterInterruptPrefix(_ text: String) -> String {\n        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)\n        let lower = trimmed.lowercased()\n        let prefixes = [\n            wakeWord.lowercased(),\n            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",\n            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"\n        ]\n        for prefix in prefixes where !prefix.isEmpty && lower.hasPrefix(prefix) {\n            let index = trimmed.index(trimmed.startIndex, offsetBy: min(prefix.count, trimmed.count))\n            return String(trimmed[index...])\n                .trimmingCharacters(in: CharacterSet(charactersIn: " ,.:;!?-–—"))\n        }\n        return trimmed\n    }\n\n    /// True when a wake-word variation sits at (or very near) the START of the transcript — i.e. a\n''')
+
+          replace_once(path,
+          '''        for prefix in [wakeWordLower, "hey vision", "ok vision", "okay vision"] {\n''',
+          '''        for prefix in [wakeWordLower, "ok jarvis", "okay jarvis", "hey jarvis", "jarvis", "hey vision", "ok vision", "okay vision"] {\n''')
+
+          # 4) ViewModel: Gemini native PCM now counts as interruptible speech; don't reopen after full stop.
+          path = "OpenVision/Views/VoiceAgent/VoiceAgentViewModel.swift"
+          replace_once(path,
+          '''        voiceCommandService.shouldAllowInterrupt = { [weak self] in\n            self?.ttsService.isSpeaking ?? false\n        }\n''',
+          '''        voiceCommandService.shouldAllowInterrupt = { [weak self] in\n            guard let self else { return false }\n            return self.ttsService.isSpeaking\n                || KokoroTTSService.shared.isSpeaking\n                || GeminiLiveService.shared.isModelSpeaking\n                || self.audioPlayback.isPlaying\n        }\n''')
+
+          replace_once(path,
+          '''            // Stop TTS immediately\n            self.ttsService.stop()\n            KokoroTTSService.shared.stop()\n\n            // Stop current AI response\n''',
+          '''            // Stop every local output path immediately. Gemini normal voice uses its own\n            // fallback player, which is stopped by GeminiLiveService.interrupt() below.\n            self.ttsService.stop()\n            KokoroTTSService.shared.stop()\n            self.audioPlayback.stop()\n\n            // Stop current AI response\n''')
+
+          replace_once(path,
+          '''        GeminiLiveService.shared.onTurnComplete = { [weak self] in\n            guard let self else { return }\n            self.agentState = self.isSessionActive ? .listening : .idle\n            self.voiceCommandService.enterConversationMode()\n            // History: persist this Gemini Live exchange (transcript only, no frames).\n            self.recordLiveTurn()\n        }\n''',
+          '''        GeminiLiveService.shared.onTurnComplete = { [weak self] in\n            guard let self else { return }\n            // A response that was explicitly stopped can still deliver a late server boundary.\n            // Never reopen the microphone/conversation loop after the session was ended.\n            guard self.isSessionActive || self.isLiveVideoMode else {\n                DiagnosticLogger.shared.log("Voice", "Ignored Gemini turnComplete while session inactive")\n                return\n            }\n            self.agentState = self.isLiveVideoMode ? .liveVideo : .listening\n            self.voiceCommandService.enterConversationMode()\n            // History: persist this Gemini Live exchange (transcript only, no frames).\n            self.recordLiveTurn()\n        }\n''')
+
+          replace_once(path,
+          '''        let stopKeywords = ["stop", "be quiet", "shut up", "silence", "quiet", "enough", "ok stop", "okay stop"]\n''',
+          '''        let stopKeywords = [\n            "stop", "be quiet", "shut up", "silence", "quiet", "enough", "ok stop", "okay stop",\n            "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "cancele a resposta"\n        ]\n''')
+
+          # 5) Version/build notes.
+          replace_once("project.yml", '    CURRENT_PROJECT_VERSION: "14"\n', '    CURRENT_PROJECT_VERSION: "15"\n')
+
+          notes = Path("JARVIS_BUILD_NOTES.md")
+          existing = notes.read_text()
+          if "## Build 15" in existing:
+              raise SystemExit("Build 15 notes already present")
+          header = '''# Projeto JARVIS build notes\n\n## Build 15\n\n- Conversation polish hotfix before deeper phone-control work.\n- Gemini native audio can now be interrupted while speaking: say "Jarvis, pare" or start a follow-up with "Jarvis, ..." without waiting for the answer to finish.\n- Gemini PCM playback queue is tracked explicitly; server turn completion waits for audible PCM to drain before starting the conversation auto-end timer.\n- Local barge-in immediately clears queued PCM and suppresses late chunks from the interrupted response.\n- Late Gemini turn-complete events no longer reopen a conversation after a full stop.\n- Portuguese stop phrases are recognized.\n- Diagnostics logs barge-in, discarded stale PCM, deferred turn completion, and playback-queue drain.\n- App build number is 15.\n\n'''
+          if not existing.startswith("# Projeto JARVIS build notes\n\n"):
+              raise SystemExit("Unexpected build-notes header")
+          notes.write_text(header + existing[len("# Projeto JARVIS build notes\n\n"):])
+          print("patched build notes")
+          PY
+
+      - name: Commit and push jarvis-dev
+        shell: bash
+        run: |
+          git config user.name "automacuniao-sudo"
+          git config user.email "317072769+automacuniao-sudo@users.noreply.github.com"
+          git add OpenVision project.yml JARVIS_BUILD_NOTES.md
+          git diff --cached --stat
+          git commit -m "Improve Gemini barge-in and conversation timeout"
+          git push origin HEAD:jarvis-dev
