@@ -48,6 +48,14 @@ final class GeminiLiveService: ObservableObject {
     private var receiveTask: Task<Void, Never>?
     private var isSetupComplete: Bool = false
 
+    // MARK: - Normal voice-mode playback
+
+    /// In normal Gemini voice mode the ViewModel does not install an audio callback (that callback
+    /// is only installed for Live Video mode). Keep a local playback path so native Gemini audio
+    /// is still audible. When Live Video provides `onAudioReceived`, that external path wins.
+    private let fallbackAudioPlayback = AudioPlaybackService()
+    private var fallbackAudioReady = false
+
     // MARK: - Video Throttling
 
     private var lastFrameTime: Date = .distantPast
@@ -139,6 +147,11 @@ final class GeminiLiveService: ObservableObject {
         connectionState = .disconnected
         onConnectionStateChanged?(connectionState)
         closeWebSocket()
+
+        // Live Video installs this callback temporarily. Clear it when the session ends so a later
+        // normal wake-word session cannot keep pointing at a playback engine that was torn down.
+        onAudioReceived = nil
+
         onDisconnected?()
     }
 
@@ -161,6 +174,11 @@ final class GeminiLiveService: ObservableObject {
 
         urlSession?.invalidateAndCancel()
         urlSession = nil
+
+        if fallbackAudioReady {
+            fallbackAudioPlayback.teardown()
+            fallbackAudioReady = false
+        }
 
         isSetupComplete = false
         isModelSpeaking = false
@@ -294,6 +312,7 @@ final class GeminiLiveService: ObservableObject {
 
         isModelSpeaking = false
         isProcessing = false
+        fallbackAudioPlayback.stop()
         print("[GeminiLive] Interrupted")
     }
 
@@ -419,6 +438,7 @@ final class GeminiLiveService: ObservableObject {
         if content["interrupted"] as? Bool == true {
             isModelSpeaking = false
             isProcessing = false
+            fallbackAudioPlayback.stop()
             return
         }
 
@@ -441,7 +461,27 @@ final class GeminiLiveService: ObservableObject {
 
                     isModelSpeaking = true
                     isProcessing = true
-                    onAudioReceived?(audioData)
+
+                    if let onAudioReceived {
+                        // Live Video mode owns playback through the ViewModel.
+                        onAudioReceived(audioData)
+                    } else {
+                        // Normal wake-word Gemini mode has no ViewModel audio callback. Without this
+                        // fallback the model returns valid PCM audio but the app silently discards it.
+                        if !fallbackAudioReady {
+                            do {
+                                try fallbackAudioPlayback.setup()
+                                fallbackAudioReady = true
+                                print("[GeminiLive] Normal voice playback ready")
+                            } catch {
+                                lastError = "Audio playback setup failed: \(error.localizedDescription)"
+                                print("[GeminiLive] \(lastError ?? "Audio playback setup failed")")
+                            }
+                        }
+                        if fallbackAudioReady {
+                            fallbackAudioPlayback.playAudio(data: audioData)
+                        }
+                    }
                 }
 
                 // Text (transcription)
@@ -449,6 +489,12 @@ final class GeminiLiveService: ObservableObject {
                     onOutputTranscription?(text)
                 }
             }
+        }
+
+        // Output transcription can be delivered alongside modelTurn as a sibling field.
+        if let outputTranscription = content["outputTranscription"] as? [String: Any],
+           let text = outputTranscription["text"] as? String, !text.isEmpty {
+            onOutputTranscription?(text)
         }
 
         // Input transcription
