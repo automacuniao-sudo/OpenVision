@@ -524,23 +524,23 @@ final class VoiceCommandService: ObservableObject {
                 return
             }
 
-            if allowInterrupt, interruptPrefixAtStart(transcription) != nil {
-                // During an active reply accept either the configured wake phrase OR the shorter
-                // assistant name ("Jarvis"). This gives a natural barge-in: "Jarvis, pare" or
-                // "Jarvis, e quando ele voltou ao Santos?" without waiting for the reply to finish.
-                let command = extractCommandAfterInterruptPrefix(transcription)
+            if allowInterrupt,
+               let command = recentInterruptCommand(in: transcription),
+               !command.isEmpty {
+                // While JARVIS speaks, Apple's recognizer also hears the speaker output. The live
+                // transcript therefore often starts with JARVIS' own sentence, with the user's
+                // "Jarvis, ..." appended later. Detect the MOST RECENT wake/name marker instead of
+                // requiring it at character zero.
                 print("[VoiceCommand] JARVIS barge-in detected: '\(command)'")
+                DiagnosticLogger.shared.log("Voice", "Barge-in follow-up detected: \(command)")
 
-                // Stop output/model generation immediately. Keep this recognizer task alive: once
-                // state becomes .listening, later partials of the SAME utterance keep building the
-                // follow-up instead of making the user repeat it.
                 onInterruption?()
                 state = .listening
                 currentTranscription = command
-                hasSpokenThisTurn = !command.isEmpty
+                hasSpokenThisTurn = true
                 resetSilenceTimer()
 
-                if result.isFinal && !command.isEmpty {
+                if result.isFinal {
                     print("[VoiceCommand] Barge-in result final, processing command immediately")
                     handleCommandComplete(command)
                 }
@@ -560,16 +560,66 @@ final class VoiceCommandService: ObservableObject {
     /// through the glasses) can't false-trigger a stop. Excludes "stop video/stream" — that's a
     /// live-video command handled elsewhere.
     private func isStopPhrase(_ text: String) -> Bool {
-        // Require a JARVIS/wake prefix so the assistant's own Portuguese audio cannot false-trigger
-        // on common words such as "para". Users can say "Jarvis, pare", "Ok Jarvis, silêncio", etc.
-        guard interruptPrefixAtStart(text) != nil else { return false }
-        let lower = text.lowercased()
-        if lower.contains("video") || lower.contains("stream") { return false }
+        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let tail = String(lower.suffix(100))
+        if tail.contains("video") || tail.contains("stream") { return false }
+
+        // Also accept the natural Portuguese order "pare Jarvis". Restrict these reversed forms
+        // to the recent tail so ordinary words from the assistant's own echoed speech do not stop it.
+        let reversedStopPhrases = [
+            "pare jarvis", "para jarvis", "parar jarvis", "silêncio jarvis", "silencio jarvis",
+            "chega jarvis", "cancela jarvis", "cancelar jarvis", "stop jarvis"
+        ]
+        if reversedStopPhrases.contains(where: { tail.contains($0) }) {
+            DiagnosticLogger.shared.log("Voice", "Barge-in stop detected (stop-before-Jarvis)")
+            return true
+        }
+
+        // Normal order: "Jarvis, pare" / "Ok Jarvis, silêncio". Use the latest marker because
+        // the SFSpeech transcript may already contain several seconds of the assistant's own audio.
+        guard let command = recentInterruptCommand(in: text)?.lowercased() else { return false }
         let stopWords = [
             "stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel",
             "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "chega", "cancela", "cancelar"
         ]
-        return stopWords.contains { lower.contains($0) }
+        let matched = stopWords.contains { command == $0 || command.hasPrefix($0 + " ") }
+        if matched { DiagnosticLogger.shared.log("Voice", "Barge-in stop detected (Jarvis-before-stop)") }
+        return matched
+    }
+
+    /// Extract text after the most recent JARVIS/wake marker in the tail of an accumulating
+    /// SFSpeech transcript. During playback that transcript includes speaker echo, so looking only
+    /// at the beginning makes real interruptions invisible.
+    private func recentInterruptCommand(in text: String) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        let lowerNSString = lower as NSString
+        let originalNSString = trimmed as NSString
+        let prefixes = [
+            wakeWord.lowercased(),
+            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
+            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"
+        ]
+
+        var bestLocation = NSNotFound
+        var bestLength = 0
+        for prefix in prefixes where !prefix.isEmpty {
+            let range = lowerNSString.range(of: prefix, options: .backwards)
+            if range.location != NSNotFound && (bestLocation == NSNotFound || range.location > bestLocation) {
+                bestLocation = range.location
+                bestLength = range.length
+            }
+        }
+        guard bestLocation != NSNotFound else { return nil }
+
+        // A deliberate interrupt should be recent. This rejects an old "Jarvis" that may have
+        // appeared much earlier in echoed assistant speech.
+        guard lowerNSString.length - bestLocation <= 120 else { return nil }
+        let end = bestLocation + bestLength
+        guard end <= originalNSString.length else { return nil }
+
+        return originalNSString.substring(from: end)
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ,.:;!?-–—"))
     }
 
     /// Prefix accepted specifically while JARVIS is speaking. Idle wake-word detection remains

@@ -1,5 +1,14 @@
 # Projeto JARVIS build notes
 
+## Build 16
+
+- Barge-in hotfix based on on-device diagnostics.
+- Interruption no longer requires "Jarvis" to be at character zero of Apple's accumulating STT transcript; the latest recent JARVIS marker is used, so speaker echo before the user's phrase does not hide the command.
+- Both "Jarvis, pare" and the natural reversed order "pare Jarvis" are accepted.
+- Follow-ups such as "Jarvis, agora fale sobre X" interrupt the current Gemini native-audio reply.
+- Interruption is also allowed while Gemini is processing, before the first PCM chunk arrives.
+- App build number is 16.
+
 ## Build 15
 
 - Conversation polish hotfix: barge-in and reliable auto-end before deeper phone-control work.

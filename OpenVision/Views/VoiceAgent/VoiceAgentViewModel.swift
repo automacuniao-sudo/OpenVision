@@ -498,6 +498,7 @@ final class VoiceAgentViewModel: ObservableObject {
             return self.ttsService.isSpeaking
                 || KokoroTTSService.shared.isSpeaking
                 || GeminiLiveService.shared.isModelSpeaking
+                || GeminiLiveService.shared.isProcessing
                 || self.audioPlayback.isPlaying
         }
 
