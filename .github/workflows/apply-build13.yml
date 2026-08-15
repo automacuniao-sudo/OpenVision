@@ -1,0 +1,333 @@
+name: Apply Build 13 Changes
+
+on:
+  push:
+    branches:
+      - build13-prep
+    paths:
+      - .github/workflows/apply-build13.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: build13-prep
+          fetch-depth: 0
+
+      - name: Apply diagnostics and voice fixes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"Expected text not found in {path}: {old[:120]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # 1) Persistent diagnostics logger, entirely on-device (no Xcode/Mac required).
+          Path("OpenVision/Services/Diagnostics").mkdir(parents=True, exist_ok=True)
+          Path("OpenVision/Services/Diagnostics/DiagnosticLogger.swift").write_text(r'''// OpenVision - DiagnosticLogger.swift
+// Persistent in-app diagnostics for Windows/GitHub Actions/Sideloadly development.
+
+import Foundation
+import Combine
+
+@MainActor
+final class DiagnosticLogger: ObservableObject {
+    static let shared = DiagnosticLogger()
+
+    @Published private(set) var entries: [String] = []
+    let fileURL: URL
+
+    private let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+        return f
+    }()
+
+    private let maxEntries = 1000
+
+    private init() {
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        fileURL = documents.appendingPathComponent("jarvis-diagnostics.log")
+
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            FileManager.default.createFile(atPath: fileURL.path, contents: nil)
+        }
+
+        if let existing = try? String(contentsOf: fileURL, encoding: .utf8), !existing.isEmpty {
+            entries = Array(existing.split(separator: "\n", omittingEmptySubsequences: true).map(String.init).suffix(maxEntries))
+        }
+
+        log("App", "Diagnostics initialized — OpenVision \(Config.appVersion) (\(Config.buildNumber))")
+    }
+
+    func log(_ category: String, _ message: String) {
+        let line = "[\(formatter.string(from: Date()))] [\(category)] \(message)"
+        entries.append(line)
+        if entries.count > maxEntries {
+            entries.removeFirst(entries.count - maxEntries)
+        }
+        appendToFile(line + "\n")
+        print("[Diagnostics] \(line)")
+    }
+
+    var exportText: String {
+        entries.joined(separator: "\n")
+    }
+
+    func clear() {
+        entries.removeAll()
+        try? Data().write(to: fileURL, options: .atomic)
+        log("App", "Diagnostics cleared")
+    }
+
+    private func appendToFile(_ text: String) {
+        guard let data = text.data(using: .utf8) else { return }
+        do {
+            let handle = try FileHandle(forWritingTo: fileURL)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            try handle.close()
+        } catch {
+            print("[Diagnostics] File write failed: \(error.localizedDescription)")
+        }
+    }
+}
+''')
+
+          # 2) Diagnostics UI: view/copy/share/clear logs directly on iPhone.
+          Path("OpenVision/Views/Settings/DiagnosticsView.swift").write_text(r'''// OpenVision - DiagnosticsView.swift
+
+import SwiftUI
+import UIKit
+
+struct DiagnosticsView: View {
+    @StateObject private var logger = DiagnosticLogger.shared
+    @State private var copied = false
+
+    var body: some View {
+        List {
+            Section("Build") {
+                HStack {
+                    Text("Version")
+                    Spacer()
+                    Text("\(Config.appVersion) (\(Config.buildNumber))")
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section {
+                ScrollView {
+                    Text(logger.exportText.isEmpty ? "No diagnostic events yet." : logger.exportText)
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                }
+                .frame(minHeight: 300)
+            } header: {
+                Text("Logs")
+            } footer: {
+                Text("Logs may include speech transcripts and technical state, but never the Gemini API key.")
+            }
+
+            Section("Actions") {
+                Button {
+                    UIPasteboard.general.string = logger.exportText
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                } label: {
+                    Label(copied ? "Copied" : "Copy Logs", systemImage: copied ? "checkmark" : "doc.on.doc")
+                }
+
+                ShareLink(item: logger.fileURL) {
+                    Label("Share Log File", systemImage: "square.and.arrow.up")
+                }
+
+                Button(role: .destructive) {
+                    logger.clear()
+                } label: {
+                    Label("Clear Logs", systemImage: "trash")
+                }
+            }
+        }
+        .navigationTitle("Diagnostics")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+''')
+
+          # 3) Settings entry for diagnostics.
+          replace_once(
+              "OpenVision/Views/Settings/SettingsView.swift",
+              '''                    NavigationLink {\n                        DocumentsSettingsView()\n                    } label: {\n                        Label("My Documents", systemImage: "books.vertical")\n                    }\n\n                    Toggle(isOn: $settingsManager.settings.autoReconnect) {''',
+              '''                    NavigationLink {\n                        DocumentsSettingsView()\n                    } label: {\n                        Label("My Documents", systemImage: "books.vertical")\n                    }\n\n                    NavigationLink {\n                        DiagnosticsView()\n                    } label: {\n                        Label("Diagnostics / Logs", systemImage: "waveform.path.ecg")\n                    }\n\n                    Toggle(isOn: $settingsManager.settings.autoReconnect) {'''
+          )
+
+          # 4) Portuguese speech recognition + proper Never timeout + dictation after wake word.
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              'private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))',
+              'private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "pt-BR"))'
+          )
+
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '''        request.shouldReportPartialResults = true\n        request.taskHint = .search\n        var phrases = ["Ok Vision", "Okay Vision", "Hey Vision", "Vision"]''',
+              '''        request.shouldReportPartialResults = true\n        // Short-phrase search while idle for the wake word; full dictation once activated.\n        // Using .search for normal questions was hurting Brazilian Portuguese/place-name accuracy.\n        request.taskHint = state == .idle ? .search : .dictation\n        var phrases = ["Ok Vision", "Okay Vision", "Hey Vision", "Vision"]'''
+          )
+
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '''    func enterConversationMode() {\n        // Restart recognition to clear accumulated transcription\n        restartRecognition()\n\n        state = .conversationMode\n        hasSpokenThisTurn = false''',
+              '''    func enterConversationMode() {\n        // Set the state BEFORE rebuilding recognition so configureRecognitionRequest uses\n        // dictation rather than wake-word search for follow-up questions.\n        state = .conversationMode\n        restartRecognition()\n\n        hasSpokenThisTurn = false'''
+          )
+
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '''        // Transition to listening\n        state = .listening\n        currentTranscription = ""\n\n        // Start command timeout''',
+              '''        // Transition to listening and rebuild recognition in dictation mode.\n        state = .listening\n        currentTranscription = ""\n        restartRecognition()\n\n        // Start command timeout'''
+          )
+
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '''    /// Start conversation timeout (auto-exit after silence)\n    private func startConversationTimeout() {\n        conversationTimeoutTimer?.invalidate()\n        conversationTimeoutTimer = Timer.scheduledTimer(withTimeInterval: 4.0, repeats: false) { [weak self] _ in\n            Task { @MainActor in\n                self?.handleConversationTimeout()\n            }\n        }\n    }''',
+              '''    /// Start conversation timeout using the user's Voice settings. A value of 0 means Never.\n    private func startConversationTimeout() {\n        conversationTimeoutTimer?.invalidate()\n        conversationTimeoutTimer = nil\n\n        let timeout = SettingsManager.shared.settings.conversationTimeout\n        if timeout <= 0 {\n            DiagnosticLogger.shared.log("Voice", "Conversation auto-end disabled (Never)")\n            return\n        }\n\n        DiagnosticLogger.shared.log("Voice", "Conversation auto-end armed for \\(Int(timeout))s")\n        conversationTimeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in\n            Task { @MainActor in\n                self?.handleConversationTimeout()\n            }\n        }\n    }'''
+          )
+
+          # Voice diagnostics at the most useful boundaries.
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '        print("[VoiceCommand] Started listening - audio engine running")',
+              '        print("[VoiceCommand] Started listening - audio engine running")\n        DiagnosticLogger.shared.log("Voice", "Recognizer started locale=pt-BR state=\\(state) route=\\(AudioSessionManager.shared.currentRouteDescription)")'
+          )
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '        print("[VoiceCommand] 🎤 heard(\\(state)): \\"\\(transcription)\\"")',
+              '        print("[VoiceCommand] 🎤 heard(\\(state)): \\"\\(transcription)\\"")\n        DiagnosticLogger.shared.log("STT", "heard[\\(state)]: \\(transcription)")'
+          )
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '        print("[VoiceCommand] Wake word detected!")',
+              '        print("[VoiceCommand] Wake word detected!")\n        DiagnosticLogger.shared.log("Voice", "Wake word detected: \\(wakeWord)")'
+          )
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '        print("[VoiceCommand] Command captured: \\(command)")',
+              '        print("[VoiceCommand] Command captured: \\(command)")\n        DiagnosticLogger.shared.log("Voice", "Command captured: \\(command)")'
+          )
+          replace_once(
+              "OpenVision/Services/Voice/VoiceCommandService.swift",
+              '            print("[VoiceCommand] Conversation timeout - no speech detected")',
+              '            print("[VoiceCommand] Conversation timeout - no speech detected")\n            DiagnosticLogger.shared.log("Voice", "Conversation timeout fired")'
+          )
+
+          # 5) Gemini defaults to pt-BR and logs the complete request/response/audio path.
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '''        Keep responses concise and conversational - the user is wearing glasses and expects quick, natural interactions.\n\n        The current date and time is''',
+              '''        Keep responses concise and conversational - the user is wearing glasses and expects quick, natural interactions.\n\n        RESPOND IN BRAZILIAN PORTUGUESE (pt-BR). YOU MUST RESPOND UNMISTAKABLY IN BRAZILIAN PORTUGUESE unless the user explicitly asks for another language.\n\n        The current date and time is'''
+          )
+
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '        connectionState = .connecting\n        onConnectionStateChanged?(connectionState)',
+              '        connectionState = .connecting\n        onConnectionStateChanged?(connectionState)\n        DiagnosticLogger.shared.log("Gemini", "Connecting model=\\(Constants.GeminiLive.modelName)")'
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '            print("[GeminiLive] Connected")',
+              '            print("[GeminiLive] Connected")\n            DiagnosticLogger.shared.log("Gemini", "Connected and setup complete")'
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '            closeWebSocket()\n            throw error',
+              '            DiagnosticLogger.shared.log("Gemini", "Connect failed: \\(error.localizedDescription)")\n            closeWebSocket()\n            throw error'
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '        print("[GeminiLive] Disconnecting")',
+              '        print("[GeminiLive] Disconnecting")\n        DiagnosticLogger.shared.log("Gemini", "Disconnecting")'
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '        try await sendJSON(setup)',
+              '        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO + pt-BR system instruction")\n        try await sendJSON(setup)'
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '        try await sendJSON(message)\n    }\n\n    /// Interrupt the AI',
+              '        DiagnosticLogger.shared.log("Gemini", "Sending text turn: \\(text)")\n        try await sendJSON(message)\n    }\n\n    /// Interrupt the AI'
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '                        print("[GeminiLive] Receive error: \\(error)")',
+              '                        print("[GeminiLive] Receive error: \\(error)")\n                        DiagnosticLogger.shared.log("Gemini", "Receive error: \\(error.localizedDescription)")'
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '''        if json["setupComplete"] != nil {\n            isSetupComplete = true\n            return\n        }''',
+              '''        if json["setupComplete"] != nil {\n            isSetupComplete = true\n            DiagnosticLogger.shared.log("Gemini", "Received setupComplete")\n            return\n        }'''
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '''        if content["turnComplete"] as? Bool == true {\n            isModelSpeaking = false\n            isProcessing = false\n            onTurnComplete?()''',
+              '''        if content["turnComplete"] as? Bool == true {\n            isModelSpeaking = false\n            isProcessing = false\n            DiagnosticLogger.shared.log("Gemini", "Turn complete")\n            onTurnComplete?()'''
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '''                    isModelSpeaking = true\n                    isProcessing = true\n\n                    if let onAudioReceived {''',
+              '''                    isModelSpeaking = true\n                    isProcessing = true\n                    DiagnosticLogger.shared.log("GeminiAudio", "Received PCM chunk bytes=\\(audioData.count)")\n\n                    if let onAudioReceived {'''
+          )
+          replace_once(
+              "OpenVision/Services/GeminiLive/GeminiLiveService.swift",
+              '''        if let outputTranscription = content["outputTranscription"] as? [String: Any],\n           let text = outputTranscription["text"] as? String, !text.isEmpty {\n            onOutputTranscription?(text)''',
+              '''        if let outputTranscription = content["outputTranscription"] as? [String: Any],\n           let text = outputTranscription["text"] as? String, !text.isEmpty {\n            DiagnosticLogger.shared.log("Gemini", "Output transcript: \\(text)")\n            onOutputTranscription?(text)'''
+          )
+
+          # 6) Playback diagnostics.
+          replace_once(
+              "OpenVision/Services/Audio/AudioPlaybackService.swift",
+              '        print("[AudioPlayback] Engine started")',
+              '        print("[AudioPlayback] Engine started")\n        DiagnosticLogger.shared.log("Audio", "Playback engine started format=\\(outputFormat.sampleRate)Hz/\\(outputFormat.channelCount)ch")'
+          )
+          replace_once(
+              "OpenVision/Services/Audio/AudioPlaybackService.swift",
+              '''    func playAudio(data: Data) {\n        guard let engine = audioEngine, let player = playerNode else {''',
+              '''    func playAudio(data: Data) {\n        DiagnosticLogger.shared.log("Audio", "playAudio bytes=\\(data.count)")\n        guard let engine = audioEngine, let player = playerNode else {'''
+          )
+          replace_once(
+              "OpenVision/Services/Audio/AudioPlaybackService.swift",
+              '            print("[AudioPlayback] Engine not setup")',
+              '            print("[AudioPlayback] Engine not setup")\n            DiagnosticLogger.shared.log("Audio", "ERROR: playback engine not setup")'
+          )
+
+          # 7) Build number 13 so the installed IPA is unmistakable in Settings > About.
+          replace_once(
+              "project.yml",
+              '    CURRENT_PROJECT_VERSION: "12"',
+              '    CURRENT_PROJECT_VERSION: "13"'
+          )
+
+          # Remove this one-shot patch workflow from the final branch contents.
+          Path(".github/workflows/apply-build13.yml").unlink()
+          PY
+
+      - name: Commit build 13 changes
+        shell: bash
+        run: |
+          git config user.name "automacuniao-sudo"
+          git config user.email "317072769+automacuniao-sudo@users.noreply.github.com"
+          git add -A
+          git commit -m "Add in-app diagnostics and fix Portuguese voice flow"
+          git push origin HEAD:build13-prep
