@@ -1,5 +1,5 @@
 // OpenVision - GeminiSettingsView.swift
-// Gemini Live API key configuration
+// Gemini Live API key, voice, and video configuration
 
 import SwiftUI
 
@@ -13,6 +13,18 @@ struct GeminiSettingsView: View {
 
     @State private var apiKey: String = ""
     @State private var videoFPS: Int = 1
+    @State private var voiceName: String = "Charon"
+
+    /// Google currently exposes these prebuilt voices to native-audio/TTS models.
+    /// Keeping the raw API names here makes the setting future-proof and easy to compare in AI Studio.
+    private let voiceOptions = [
+        "Charon", "Orus", "Iapetus", "Gacrux", "Sadaltager",
+        "Kore", "Puck", "Zephyr", "Fenrir", "Leda",
+        "Aoede", "Callirrhoe", "Autonoe", "Enceladus", "Umbriel",
+        "Algieba", "Despina", "Erinome", "Algenib", "Rasalgethi",
+        "Laomedeia", "Achernar", "Alnilam", "Schedar", "Pulcherrima",
+        "Achird", "Zubenelgenubi", "Vindemiatrix", "Sadachbia", "Sulafat"
+    ]
 
     // MARK: - Body
 
@@ -48,6 +60,19 @@ struct GeminiSettingsView: View {
                     }
                     .font(.caption)
                 }
+            }
+
+            // Native Gemini voice
+            Section {
+                Picker("Gemini Voice", selection: $voiceName) {
+                    ForEach(voiceOptions, id: \.self) { voice in
+                        Text(voice).tag(voice)
+                    }
+                }
+            } header: {
+                Text("Native Voice")
+            } footer: {
+                Text("This controls Gemini Live's own audio voice. It is separate from Apple Voice/Kokoro. Changes apply on the next Gemini connection. Charon is the JARVIS default for this build.")
             }
 
             // Video Settings
@@ -117,6 +142,7 @@ struct GeminiSettingsView: View {
         .onAppear {
             apiKey = settingsManager.settings.geminiAPIKey
             videoFPS = settingsManager.settings.geminiVideoFPS
+            voiceName = settingsManager.settings.geminiVoiceName.isEmpty ? "Charon" : settingsManager.settings.geminiVoiceName
         }
         .onDisappear {
             saveSettings()
@@ -136,6 +162,7 @@ struct GeminiSettingsView: View {
     private func saveSettings() {
         settingsManager.settings.geminiAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         settingsManager.settings.geminiVideoFPS = videoFPS
+        settingsManager.settings.geminiVoiceName = voiceName
         settingsManager.saveNow()
     }
 }
