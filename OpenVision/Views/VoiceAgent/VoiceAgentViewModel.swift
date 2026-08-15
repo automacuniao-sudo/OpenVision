@@ -494,7 +494,11 @@ final class VoiceAgentViewModel: ObservableObject {
 
         // Allow wake word to interrupt TTS (for "ok vision stop")
         voiceCommandService.shouldAllowInterrupt = { [weak self] in
-            self?.ttsService.isSpeaking ?? false
+            guard let self else { return false }
+            return self.ttsService.isSpeaking
+                || KokoroTTSService.shared.isSpeaking
+                || GeminiLiveService.shared.isModelSpeaking
+                || self.audioPlayback.isPlaying
         }
 
         // Wake word detected
@@ -563,9 +567,11 @@ final class VoiceAgentViewModel: ObservableObject {
             guard let self else { return }
             print("[VoiceAgent] Barge-in detected")
 
-            // Stop TTS immediately
+            // Stop every local output path immediately. Gemini normal voice uses its own
+            // fallback player, which is stopped by GeminiLiveService.interrupt() below.
             self.ttsService.stop()
             KokoroTTSService.shared.stop()
+            self.audioPlayback.stop()
 
             // Stop current AI response
             Task {
@@ -701,7 +707,13 @@ final class VoiceAgentViewModel: ObservableObject {
 
         GeminiLiveService.shared.onTurnComplete = { [weak self] in
             guard let self else { return }
-            self.agentState = self.isSessionActive ? .listening : .idle
+            // A response that was explicitly stopped can still deliver a late server boundary.
+            // Never reopen the microphone/conversation loop after the session was ended.
+            guard self.isSessionActive || self.isLiveVideoMode else {
+                DiagnosticLogger.shared.log("Voice", "Ignored Gemini turnComplete while session inactive")
+                return
+            }
+            self.agentState = self.isLiveVideoMode ? .liveVideo : .listening
             self.voiceCommandService.enterConversationMode()
             // History: persist this Gemini Live exchange (transcript only, no frames).
             self.recordLiveTurn()
@@ -733,7 +745,10 @@ final class VoiceAgentViewModel: ObservableObject {
         let lowerCommand = command.lowercased()
 
         // Check for "stop" command - stops TTS and waits for next command
-        let stopKeywords = ["stop", "be quiet", "shut up", "silence", "quiet", "enough", "ok stop", "okay stop"]
+        let stopKeywords = [
+            "stop", "be quiet", "shut up", "silence", "quiet", "enough", "ok stop", "okay stop",
+            "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "cancele a resposta"
+        ]
         let isStopCommand = stopKeywords.contains { lowerCommand.contains($0) } &&
                            !lowerCommand.contains("video") && !lowerCommand.contains("stream")
 

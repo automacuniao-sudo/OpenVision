@@ -482,7 +482,7 @@ final class VoiceCommandService: ObservableObject {
         case .listening, .conversationMode:
             // Strip wake word from transcription (like xmeta does)
             var command = transcription
-            for ww in [wakeWord.lowercased(), "ok vision", "okay vision", "hey vision", "hi vision"] {
+            for ww in [wakeWord.lowercased(), "ok jarvis", "okay jarvis", "hey jarvis", "jarvis", "ok vision", "okay vision", "hey vision", "hi vision"] {
                 if let range = command.lowercased().range(of: ww) {
                     command = String(command[range.upperBound...]).trimmingCharacters(in: .whitespaces)
                     break
@@ -524,33 +524,24 @@ final class VoiceCommandService: ObservableObject {
                 return
             }
 
-            if allowInterrupt && detectWakeWord(in: transcription, bypassCooldown: true)
-                && wakeWordAtStart(transcription) {
-                // A BARE "Ok Vision" with nothing after it, mid-reply, is almost always the mic
-                // hallucinating the wake word from the reply audio the speaker is playing (echo) —
-                // NOT a deliberate interrupt. Real interrupts carry a follow-up ("Ok Vision, what
-                // about Mars?"). Require that command; otherwise ignore and let the reply finish.
-                // (To simply silence a reply, "Ok Vision stop" is handled by the stop-phrase branch
-                // above.)
-                let command = extractCommandAfterWakeWord(transcription)
-                guard !command.isEmpty else { return }
+            if allowInterrupt, interruptPrefixAtStart(transcription) != nil {
+                // During an active reply accept either the configured wake phrase OR the shorter
+                // assistant name ("Jarvis"). This gives a natural barge-in: "Jarvis, pare" or
+                // "Jarvis, e quando ele voltou ao Santos?" without waiting for the reply to finish.
+                let command = extractCommandAfterInterruptPrefix(transcription)
+                print("[VoiceCommand] JARVIS barge-in detected: '\(command)'")
 
-                print("[VoiceCommand] Wake word + command during TTS - interrupting: '\(command)'")
-
-                // Notify to stop TTS immediately
-                onWakeWordDetected?()
-
-                // Switch to listening mode - like xmeta's isCapturingCommand = true
+                // Stop output/model generation immediately. Keep this recognizer task alive: once
+                // state becomes .listening, later partials of the SAME utterance keep building the
+                // follow-up instead of making the user repeat it.
+                onInterruption?()
                 state = .listening
                 currentTranscription = command
-                hasSpokenThisTurn = true
-
-                // Start silence timer to wait for user to finish speaking
+                hasSpokenThisTurn = !command.isEmpty
                 resetSilenceTimer()
 
-                // If result is already final, process it
-                if result.isFinal {
-                    print("[VoiceCommand] Result is final, processing command immediately")
+                if result.isFinal && !command.isEmpty {
+                    print("[VoiceCommand] Barge-in result final, processing command immediately")
                     handleCommandComplete(command)
                 }
                 return
@@ -569,11 +560,44 @@ final class VoiceCommandService: ObservableObject {
     /// through the glasses) can't false-trigger a stop. Excludes "stop video/stream" — that's a
     /// live-video command handled elsewhere.
     private func isStopPhrase(_ text: String) -> Bool {
-        guard detectWakeWord(in: text, bypassCooldown: true) else { return false }
+        // Require a JARVIS/wake prefix so the assistant's own Portuguese audio cannot false-trigger
+        // on common words such as "para". Users can say "Jarvis, pare", "Ok Jarvis, silêncio", etc.
+        guard interruptPrefixAtStart(text) != nil else { return false }
         let lower = text.lowercased()
         if lower.contains("video") || lower.contains("stream") { return false }
-        let stopWords = ["stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel"]
+        let stopWords = [
+            "stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel",
+            "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "chega", "cancela", "cancelar"
+        ]
         return stopWords.contains { lower.contains($0) }
+    }
+
+    /// Prefix accepted specifically while JARVIS is speaking. Idle wake-word detection remains
+    /// governed by the configured wake phrase; only mid-response barge-in also accepts bare "Jarvis".
+    private func interruptPrefixAtStart(_ text: String) -> String? {
+        let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let prefixes = [
+            wakeWord.lowercased(),
+            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
+            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"
+        ]
+        return prefixes.first { !$0.isEmpty && lower.hasPrefix($0) }
+    }
+
+    private func extractCommandAfterInterruptPrefix(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        let prefixes = [
+            wakeWord.lowercased(),
+            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
+            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"
+        ]
+        for prefix in prefixes where !prefix.isEmpty && lower.hasPrefix(prefix) {
+            let index = trimmed.index(trimmed.startIndex, offsetBy: min(prefix.count, trimmed.count))
+            return String(trimmed[index...])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ,.:;!?-–—"))
+        }
+        return trimmed
     }
 
     /// True when a wake-word variation sits at (or very near) the START of the transcript — i.e. a
@@ -686,7 +710,7 @@ final class VoiceCommandService: ObservableObject {
         var command = text
         let wakeWordLower = wakeWord.lowercased()
 
-        for prefix in [wakeWordLower, "hey vision", "ok vision", "okay vision"] {
+        for prefix in [wakeWordLower, "ok jarvis", "okay jarvis", "hey jarvis", "jarvis", "hey vision", "ok vision", "okay vision"] {
             if command.lowercased().hasPrefix(prefix) {
                 command = String(command.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
                 break

@@ -1,5 +1,16 @@
 # Projeto JARVIS build notes
 
+## Build 15
+
+- Conversation polish hotfix before deeper phone-control work.
+- Gemini native audio can now be interrupted while speaking: say "Jarvis, pare" or start a follow-up with "Jarvis, ..." without waiting for the answer to finish.
+- Gemini PCM playback queue is tracked explicitly; server turn completion waits for audible PCM to drain before starting the conversation auto-end timer.
+- Local barge-in immediately clears queued PCM and suppresses late chunks from the interrupted response.
+- Late Gemini turn-complete events no longer reopen a conversation after a full stop.
+- Portuguese stop phrases are recognized.
+- Diagnostics logs barge-in, discarded stale PCM, deferred turn completion, and playback-queue drain.
+- App build number is 15.
+
 ## Build 14
 
 - JARVIS now identifies itself as the user's Project JARVIS personal assistant rather than a generic Gemini assistant.

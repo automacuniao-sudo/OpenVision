@@ -61,6 +61,9 @@ final class GeminiLiveService: ObservableObject {
     /// is still audible. When Live Video provides `onAudioReceived`, that external path wins.
     private let fallbackAudioPlayback = AudioPlaybackService()
     private var fallbackAudioReady = false
+    private var pendingTurnComplete = false
+    private var discardIncomingAudio = false
+    private var ignoreNextTurnComplete = false
 
     // MARK: - Video Throttling
 
@@ -75,7 +78,15 @@ final class GeminiLiveService: ObservableObject {
 
     // MARK: - Initialization
 
-    private init() {}
+    private init() {
+        // A Gemini server turn can finish before the last locally queued PCM buffer is audible.
+        // Finalize the conversational turn only when that queue really drains.
+        fallbackAudioPlayback.onPlaybackComplete = { [weak self] in
+            guard let self, self.pendingTurnComplete else { return }
+            DiagnosticLogger.shared.log("Gemini", "PCM drained; finalizing deferred turn")
+            self.finishTurn()
+        }
+    }
 
     // MARK: - Connection
 
@@ -192,6 +203,9 @@ final class GeminiLiveService: ObservableObject {
 
         isSetupComplete = false
         isModelSpeaking = false
+        pendingTurnComplete = false
+        discardIncomingAudio = false
+        ignoreNextTurnComplete = false
     }
 
     // MARK: - Setup
@@ -329,6 +343,11 @@ final class GeminiLiveService: ObservableObject {
         // Record the utterance for the tool registry's relative-time guard.
         NativeToolContext.shared.set(text)
 
+        // If this text is a barge-in follow-up, resume accepting model audio now. With automatic
+        // activity detection enabled, realtimeInput.text itself counts as user activity and the
+        // server's START_OF_ACTIVITY_INTERRUPTS policy cuts off the previous model response.
+        discardIncomingAudio = false
+
         let message: [String: Any] = [
             "realtimeInput": [
                 "text": text
@@ -339,14 +358,19 @@ final class GeminiLiveService: ObservableObject {
         try await sendJSON(message)
     }
 
-    /// Interrupt the AI (barge-in support)
+    /// Interrupt local playback immediately for barge-in. The next realtimeInput.text
+    /// is user activity and asks Gemini's START_OF_ACTIVITY_INTERRUPTS policy to cut the server turn.
+    /// Until that next user turn is sent, discard late PCM chunks from the response we just silenced.
     func interrupt() async {
-        // Send interrupt signal if model is speaking
-        guard isModelSpeaking else { return }
+        guard isModelSpeaking || isProcessing || fallbackAudioPlayback.isPlaying else { return }
 
+        pendingTurnComplete = false
+        ignoreNextTurnComplete = true
+        discardIncomingAudio = true
         isModelSpeaking = false
         isProcessing = false
         fallbackAudioPlayback.stop()
+        DiagnosticLogger.shared.log("Gemini", "Local barge-in: playback stopped; old PCM suppressed")
         print("[GeminiLive] Interrupted")
     }
 
@@ -465,6 +489,8 @@ final class GeminiLiveService: ObservableObject {
     private func handleServerContent(_ content: [String: Any]) {
         // Interrupted content should stop queued audio immediately.
         if content["interrupted"] as? Bool == true {
+            pendingTurnComplete = false
+            ignoreNextTurnComplete = false
             isModelSpeaking = false
             isProcessing = false
             fallbackAudioPlayback.stop()
@@ -486,6 +512,14 @@ final class GeminiLiveService: ObservableObject {
                         let latency = Date().timeIntervalSince(speechEnd) * 1000
                         print("[GeminiLive] Latency: \(Int(latency))ms")
                         lastUserSpeechEnd = nil
+                    }
+
+                    // After a local barge-in, late chunks from the old response can still
+                    // arrive until the next user realtimeInput reaches Gemini. Never let them restart
+                    // audio the user explicitly stopped.
+                    if discardIncomingAudio {
+                        DiagnosticLogger.shared.log("GeminiAudio", "Discarded old PCM chunk bytes=\(audioData.count)")
+                        continue
                     }
 
                     isModelSpeaking = true
@@ -538,11 +572,35 @@ final class GeminiLiveService: ObservableObject {
 
         // Turn complete comes LAST so we never discard sibling audio/transcription fields.
         if content["turnComplete"] as? Bool == true {
-            isModelSpeaking = false
+            // A locally interrupted response may still report its final boundary. Consume that
+            // boundary without reopening conversation mode in the middle of the user's barge-in.
+            if ignoreNextTurnComplete {
+                ignoreNextTurnComplete = false
+                pendingTurnComplete = false
+                isModelSpeaking = false
+                isProcessing = false
+                DiagnosticLogger.shared.log("Gemini", "Ignored turnComplete for interrupted response")
+                return
+            }
+
             isProcessing = false
-            DiagnosticLogger.shared.log("Gemini", "Turn complete")
-            onTurnComplete?()
+            if onAudioReceived == nil && fallbackAudioReady && fallbackAudioPlayback.isPlaying {
+                // Normal wake-word mode: server generation is done, but local PCM is still audible.
+                // Defer the conversation timeout/listening state until the actual speaker queue drains.
+                pendingTurnComplete = true
+                DiagnosticLogger.shared.log("Gemini", "Server turn complete; waiting for PCM drain")
+            } else {
+                finishTurn()
+            }
         }
+    }
+
+    private func finishTurn() {
+        pendingTurnComplete = false
+        isModelSpeaking = false
+        isProcessing = false
+        DiagnosticLogger.shared.log("Gemini", "Turn complete")
+        onTurnComplete?()
     }
 
     /// Handle a tool call from Gemini: run each requested native tool and send the results back as a

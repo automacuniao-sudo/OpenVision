@@ -20,6 +20,12 @@ final class AudioPlaybackService: ObservableObject {
     private var audioEngine: AVAudioEngine?
     private var playerNode: AVAudioPlayerNode?
 
+    /// AVAudioPlayerNode stays `isPlaying == true` even after its scheduled queue drains, so track
+    /// our own queue depth. This is also generation-tagged so completion callbacks from buffers
+    /// canceled by `stop()` cannot accidentally announce that a newer reply finished.
+    private var scheduledBufferCount = 0
+    private var playbackGeneration = 0
+
     // MARK: - Format
 
     /// Expected input sample rate (from Gemini)
@@ -63,6 +69,8 @@ final class AudioPlaybackService: ObservableObject {
     /// Teardown audio engine
     func teardown() {
         playerNode?.stop()
+        playbackGeneration += 1
+        scheduledBufferCount = 0
         audioEngine?.stop()
         audioEngine = nil
         playerNode = nil
@@ -100,13 +108,18 @@ final class AudioPlaybackService: ObservableObject {
             return
         }
 
-        // Schedule and play
+        // Schedule and play. Track queue depth ourselves: AVAudioPlayerNode.isPlaying
+        // describes the node state, not whether any buffers remain queued.
+        let generation = playbackGeneration
+        scheduledBufferCount += 1
         player.scheduleBuffer(buffer) { [weak self] in
             Task { @MainActor in
-                // Check if more audio is queued
-                if self?.playerNode?.isPlaying == false {
-                    self?.isPlaying = false
-                    self?.onPlaybackComplete?()
+                guard let self, generation == self.playbackGeneration else { return }
+                self.scheduledBufferCount = max(0, self.scheduledBufferCount - 1)
+                if self.scheduledBufferCount == 0 {
+                    self.isPlaying = false
+                    DiagnosticLogger.shared.log("Audio", "Playback queue drained")
+                    self.onPlaybackComplete?()
                 }
             }
         }
@@ -120,8 +133,11 @@ final class AudioPlaybackService: ObservableObject {
 
     /// Stop playback
     func stop() {
+        playbackGeneration += 1
+        scheduledBufferCount = 0
         playerNode?.stop()
         isPlaying = false
+        DiagnosticLogger.shared.log("Audio", "Playback stopped / queue cleared")
     }
 
     // MARK: - Conversion
