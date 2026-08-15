@@ -2,9 +2,11 @@ name: Build JARVIS iOS
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - jarvis-dev
+      - baseline-iphone15
 
 jobs:
   build:
