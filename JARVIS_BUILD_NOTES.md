@@ -2,7 +2,7 @@
 
 ## Build 15
 
-- Conversation polish hotfix before deeper phone-control work.
+- Conversation polish hotfix: barge-in and reliable auto-end before deeper phone-control work.
 - Gemini native audio can now be interrupted while speaking: say "Jarvis, pare" or start a follow-up with "Jarvis, ..." without waiting for the answer to finish.
 - Gemini PCM playback queue is tracked explicitly; server turn completion waits for audible PCM to drain before starting the conversation auto-end timer.
 - Local barge-in immediately clears queued PCM and suppresses late chunks from the interrupted response.
