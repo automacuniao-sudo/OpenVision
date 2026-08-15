@@ -2,7 +2,7 @@
 
 ## Build 16
 
-- Barge-in hotfix based on on-device diagnostics.
+- Barge-in hotfix based on on-device diagnostics and speaker-echo behavior.
 - Interruption no longer requires "Jarvis" to be at character zero of Apple's accumulating STT transcript; the latest recent JARVIS marker is used, so speaker echo before the user's phrase does not hide the command.
 - Both "Jarvis, pare" and the natural reversed order "pare Jarvis" are accepted.
 - Follow-ups such as "Jarvis, agora fale sobre X" interrupt the current Gemini native-audio reply.
