@@ -69,7 +69,7 @@ struct AppSettings: Codable, Equatable {
 
     // MARK: - OpenClaw Configuration
 
-    /// OpenClaw gateway WebSocket URL (e.g., "wss://openclaw.example.com")
+    /// OpenClaw gateway WebSocket URL (e.g. "wss://openclaw.example.com")
     var openClawGatewayURL: String = ""
 
     /// OpenClaw authentication token
@@ -79,6 +79,9 @@ struct AppSettings: Codable, Equatable {
 
     /// Google Gemini API key
     var geminiAPIKey: String = ""
+
+    /// Native Gemini Live voice. Applied when the next Gemini session connects.
+    var geminiVoiceName: String = "Charon"
 
     // MARK: - OpenAI Configuration
 
