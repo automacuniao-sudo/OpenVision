@@ -158,8 +158,8 @@ final class AudioSessionManager {
     func configureForPhone() throws {
         try audioSession.setCategory(
             .playAndRecord,
-            mode: .default,
-            options: [.defaultToSpeaker, .allowBluetoothA2DP]
+            mode: .voiceChat,
+            options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP]
         )
         try audioSession.setActive(true)
         // If still routed to the quiet earpiece (carried over from a glasses/voiceChat config),

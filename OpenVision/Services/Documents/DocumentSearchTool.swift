@@ -8,7 +8,7 @@ import Foundation
 
 struct DocumentSearchTool: NativeTool {
     let name = "search_docs"
-    let description = "Work with the user's imported documents (manuals, recipes, guides, instructions). Actions: 'search' (needs query — return the most relevant passages; use whenever the user asks about their documents), 'list' (name the imported documents), 'focus' (needs query naming the document — the user wants to work with one document, e.g. 'open my router manual'; its content will then be checked first for every question), 'unfocus' (the user is done with the document, e.g. 'close the document')."
+    let description = "Work with the user's imported documents (manuals, recipes, guides, instructions, Project JARVIS identity/goals, and user-profile facts). Actions: 'search' (needs query — return the most relevant passages; use whenever the user asks about their documents or asks personal/project questions that may be documented), 'list' (name the imported documents), 'focus' (needs query naming the document — the user wants to work with one document, e.g. 'open my router manual'; its content will then be checked first for every question), 'unfocus' (the user is done with the document, e.g. 'close the document')."
     let parametersSchema: [String: Any] = [
         "type": "object",
         "properties": [

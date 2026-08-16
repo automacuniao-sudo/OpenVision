@@ -1,5 +1,16 @@
 # Projeto JARVIS build notes
 
+## Build 17
+
+- Reworked interruption around the underlying acoustic-echo problem instead of adding more transcript heuristics.
+- Phone route now uses AVAudioSession voiceChat plus AVAudioEngine voice processing (AEC) on the built-in iPhone microphone.
+- Removed the unsafe "latest Jarvis anywhere" barge-in heuristic that could interpret JARVIS saying its own name as a new user command and cause feedback/crash loops.
+- Barge-in follow-ups again require a deliberate phrase starting with "Jarvis" / the wake phrase; "pare Jarvis" is also supported at utterance start.
+- Diagnostics reports whether iPhone-mic voice processing/AEC was enabled or unavailable.
+- My Documents now prefers Apple's Portuguese sentence embedding (English fallback) for pt-BR JARVIS/profile documents.
+- Gemini is instructed to search imported Project JARVIS/user-profile documents before claiming it does not know documented project or personal facts.
+- App build number is 17.
+
 ## Build 16
 
 - Barge-in hotfix based on on-device diagnostics and speaker-echo behavior.

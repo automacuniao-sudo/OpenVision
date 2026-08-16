@@ -168,8 +168,21 @@ final class VoiceCommandService: ObservableObject {
 
         configureRecognitionRequest(recognitionRequest)
 
-        // Get input node
+        // Get input node. On the iPhone built-in mic route enable AVAudioEngine voice
+        // processing BEFORE the engine starts. This is the system AEC path: audio currently
+        // playing from the device is removed from the microphone signal, so JARVIS can keep
+        // listening for a real barge-in without transcribing its own reply. Do not force this on
+        // the glasses HFP route; camera/HFP coexistence has different constraints.
         let inputNode = audioEngine.inputNode
+        if AudioSessionManager.shared.isUsingBuiltInMic {
+            do {
+                try inputNode.setVoiceProcessingEnabled(true)
+                DiagnosticLogger.shared.log("Audio", "Voice processing enabled (AEC) on iPhone mic")
+            } catch {
+                DiagnosticLogger.shared.log("Audio", "Voice processing unavailable: \(error.localizedDescription)")
+                print("[VoiceCommand] Voice processing enable failed: \(error)")
+            }
+        }
         inputNode.removeTap(onBus: 0) // defensive: never install over an existing tap
         let recordingFormat = inputNode.outputFormat(forBus: 0)
 
@@ -524,13 +537,13 @@ final class VoiceCommandService: ObservableObject {
                 return
             }
 
-            if allowInterrupt,
-               let command = recentInterruptCommand(in: transcription),
-               !command.isEmpty {
-                // While JARVIS speaks, Apple's recognizer also hears the speaker output. The live
-                // transcript therefore often starts with JARVIS' own sentence, with the user's
-                // "Jarvis, ..." appended later. Detect the MOST RECENT wake/name marker instead of
-                // requiring it at character zero.
+            if allowInterrupt, interruptPrefixAtStart(transcription) != nil {
+                // AEC should make a deliberate user interruption start with the wake/name phrase.
+                // Requiring the marker at the START is intentionally conservative: if AEC ever
+                // leaks JARVIS' own speech, the assistant saying its own name must not recursively
+                // interrupt itself.
+                let command = extractCommandAfterInterruptPrefix(transcription)
+                guard !command.isEmpty else { return }
                 print("[VoiceCommand] JARVIS barge-in detected: '\(command)'")
                 DiagnosticLogger.shared.log("Voice", "Barge-in follow-up detected: \(command)")
 
@@ -561,23 +574,22 @@ final class VoiceCommandService: ObservableObject {
     /// live-video command handled elsewhere.
     private func isStopPhrase(_ text: String) -> Bool {
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let tail = String(lower.suffix(100))
-        if tail.contains("video") || tail.contains("stream") { return false }
+        if lower.contains("video") || lower.contains("stream") { return false }
 
-        // Also accept the natural Portuguese order "pare Jarvis". Restrict these reversed forms
-        // to the recent tail so ordinary words from the assistant's own echoed speech do not stop it.
+        // Natural Portuguese order: "pare Jarvis". Require it at the beginning so leaked
+        // assistant audio cannot trigger a recursive stop.
         let reversedStopPhrases = [
             "pare jarvis", "para jarvis", "parar jarvis", "silêncio jarvis", "silencio jarvis",
             "chega jarvis", "cancela jarvis", "cancelar jarvis", "stop jarvis"
         ]
-        if reversedStopPhrases.contains(where: { tail.contains($0) }) {
+        if reversedStopPhrases.contains(where: { lower.hasPrefix($0) }) {
             DiagnosticLogger.shared.log("Voice", "Barge-in stop detected (stop-before-Jarvis)")
             return true
         }
 
-        // Normal order: "Jarvis, pare" / "Ok Jarvis, silêncio". Use the latest marker because
-        // the SFSpeech transcript may already contain several seconds of the assistant's own audio.
-        guard let command = recentInterruptCommand(in: text)?.lowercased() else { return false }
+        // Normal order: "Jarvis, pare" / "Ok Jarvis, silêncio".
+        guard interruptPrefixAtStart(text) != nil else { return false }
+        let command = extractCommandAfterInterruptPrefix(text).lowercased()
         let stopWords = [
             "stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel",
             "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "chega", "cancela", "cancelar"

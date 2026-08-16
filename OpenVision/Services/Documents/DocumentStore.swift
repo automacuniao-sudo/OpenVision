@@ -38,8 +38,11 @@ final class DocumentStore {
 
     private let queue = DispatchQueue(label: "com.openvision.document-store")
     private var cache: [StoredDocument]?
-    /// Loaded once — NLEmbedding init reads a model from disk.
-    private lazy var embedder = NLEmbedding.sentenceEmbedding(for: .english)
+    /// Loaded once — NLEmbedding init reads a model from disk. Project JARVIS is operated
+    /// primarily in Brazilian Portuguese, so index/search Portuguese documents in their native
+    /// language; keep English as a fallback on devices where the Portuguese asset is unavailable.
+    private lazy var embedder = NLEmbedding.sentenceEmbedding(for: .portuguese)
+        ?? NLEmbedding.sentenceEmbedding(for: .english)
 
     private var directory: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

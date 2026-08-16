@@ -278,6 +278,12 @@ final class GeminiLiveService: ObservableObject {
         - note: JARVIS INTERNAL notes only (save/search/list). This is NOT Apple Notes. Never claim that `note` created or edited a note in Apple's Notes app. Apple Notes integration is not available in this build yet.
         - copy_to_clipboard and search_docs as appropriate.
 
+        PERSONAL/PROJECT KNOWLEDGE: if the user asks for details about Project JARVIS, its goals,
+        architecture, or personal facts about the user that are not already present in memories,
+        call search_docs before saying you do not know. The user may have imported documents such
+        as "JARVIS - Identidade e Objetivo" and "Perfil do Usuário". Never invent missing personal
+        facts; if the imported profile does not contain the answer, say so briefly.
+
         For calendar/reminder clock times (for example "18 horas", "9:30", "amanhã às 14"), pass hour in 24-hour form, minute, and day_offset. For relative requests such as "daqui a 15 minutos", use minutes_from_now. Let the native tool do date arithmetic. After a tool runs, briefly confirm the actual result; never claim success if the tool returned an error or permission problem.
 
         If the user asks you to do something beyond the currently available tools, clearly say what is not yet integrated instead of pretending it was done.
