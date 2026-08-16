@@ -250,7 +250,7 @@ final class GeminiLiveService: ObservableObject {
             ]
         ]
 
-        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO voice=\(voiceName) + pt-BR JARVIS + Google Search")
+        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO voice=\(voiceName) + pt-BR JARVIS + native tools")
         try await sendJSON(setup)
     }
 
@@ -270,7 +270,7 @@ final class GeminiLiveService: ObservableObject {
 
         IMPORTANT: when the user asks JARVIS to perform an iPhone action that has a matching tool, CALL THE TOOL instead of merely explaining how to do it.
 
-        INTERNET / CURRENT INFORMATION: Google Search grounding is available in this live session. Use it whenever the user asks to search/pesquisar na internet, or whenever the answer depends on current or time-sensitive information such as sports schedules/results, news, weather, prices, releases, current office-holders, or recent events. Do not say that you cannot browse when Google Search is available. For example, a question such as "qual é o próximo jogo do Corinthians?" should be grounded with Google Search before answering.
+        INTERNET / CURRENT INFORMATION: the native tool `web_search` is available. CALL `web_search` whenever the user asks to search/pesquisar na internet, or whenever the answer depends on current or time-sensitive information such as sports schedules/results, news, weather, prices, releases, current office-holders, or recent events. Do not answer current facts from stale model memory when `web_search` can verify them. For example, "qual é o próximo jogo do Corinthians?" must call `web_search` before answering.
 
         Available on-device actions include:
         - device_status: read the real iPhone battery percentage, charging state, Low Power Mode, and iOS version. Use it for questions like "quanto de bateria eu tenho?".
@@ -279,6 +279,7 @@ final class GeminiLiveService: ObservableObject {
         - set_timer and start_pomodoro: local timed notifications.
         - note: JARVIS INTERNAL notes only (save/search/list). This is NOT Apple Notes. Never claim that `note` created or edited a note in Apple's Notes app. Apple Notes integration is not available in this build yet.
         - copy_to_clipboard and search_docs as appropriate.
+        - web_search: search the current internet for time-sensitive/current information.
 
         PERSONAL/PROJECT KNOWLEDGE: if the user asks for details about Project JARVIS, its goals,
         architecture, or personal facts about the user that are not already present in memories,
@@ -309,18 +310,12 @@ final class GeminiLiveService: ObservableObject {
         return prompt
     }
 
-    /// Build tool declarations: the on-device productivity tools (timers, reminders, calendar,
-    /// notes, clipboard, device status). Gemini nests function declarations under
-    /// `tools: [{functionDeclarations:[…]}]`.
+    /// Build tool declarations for the Live voice session. Keep the session itself on custom
+    /// function calling only: Gemini 3 Google Search grounding is paid-tier-only, so advertising
+    /// googleSearch here breaks setup for the project's free-tier API key. Current-information
+    /// requests are handled by the native `web_search` bridge instead.
     private func buildToolDeclarations() -> [[String: Any]] {
-        // Gemini 3.1 Flash Live supports combining built-in Google Search grounding with our
-        // synchronous native function tools in the SAME Live session. This is what lets JARVIS
-        // answer time-sensitive questions (sports schedules, current news, prices, etc.) instead
-        // of falling back to stale model knowledge or claiming it cannot browse.
-        [
-            ["googleSearch": [:] as [String: Any]],
-            ["functionDeclarations": NativeToolRegistry.shared.geminiDeclarations]
-        ]
+        [["functionDeclarations": NativeToolRegistry.shared.geminiDeclarations]]
     }
 
     // MARK: - Send Audio
@@ -459,6 +454,16 @@ final class GeminiLiveService: ObservableObject {
         if json["setupComplete"] != nil {
             isSetupComplete = true
             DiagnosticLogger.shared.log("Gemini", "Received setupComplete")
+            return
+        }
+
+        // API errors can arrive as a root-level WebSocket event during setup. Older builds ignored
+        // these and later displayed only a generic backend failure, hiding the actual cause.
+        if let apiError = json["error"] as? [String: Any] {
+            let message = (apiError["message"] as? String) ?? "Unknown Gemini API error"
+            lastError = message
+            DiagnosticLogger.shared.log("Gemini", "Server API error: \(message)")
+            print("[GeminiLive] Server API error: \(message)")
             return
         }
 

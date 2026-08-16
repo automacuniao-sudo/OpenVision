@@ -1,5 +1,13 @@
 # Projeto JARVIS build notes
 
+## Build 19
+
+- Fixed build 18 backend regression for free-tier Gemini keys.
+- Removed built-in Gemini 3 Google Search grounding from the Live session setup because current Gemini pricing marks Gemini 3 Search grounding unavailable on the free tier; this prevented setupComplete and surfaced as a generic backend failure.
+- Added native `web_search` tool that performs current-information lookup separately through `gemini-2.5-flash` + Google Search grounding, preserving the free Live voice session while still supporting current sports/news/web questions.
+- Added explicit diagnostics for root-level Gemini WebSocket API errors so future setup failures expose their actual server message.
+- App build number is 19.
+
 ## Build 18
 
 - Enabled Gemini 3.1 Flash Live built-in Google Search grounding alongside the existing native iPhone function tools. Current/time-sensitive questions such as sports schedules can now be searched instead of being refused.
