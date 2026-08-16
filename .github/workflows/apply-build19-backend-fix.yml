@@ -1,0 +1,28 @@
+name: Apply build 19 backend compatibility fix
+
+on:
+  push:
+    branches: [build19-backend-fix]
+    paths:
+      - '.github/workflows/apply-build19-backend-fix.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: build19-backend-fix
+          fetch-depth: 0
+      - name: Apply build 19 patch
+        run: python3 scripts/apply_build19_backend_fix.py
+      - name: Commit patched code
+        run: |
+          git config user.name "automacuniao-sudo"
+          git config user.email "317072769+automacuniao-sudo@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix free-tier Gemini backend and add web search bridge"
+          git push origin HEAD:build19-backend-fix
