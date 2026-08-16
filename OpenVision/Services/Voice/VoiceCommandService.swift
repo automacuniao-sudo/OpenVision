@@ -178,6 +178,7 @@ final class VoiceCommandService: ObservableObject {
             do {
                 try inputNode.setVoiceProcessingEnabled(true)
                 DiagnosticLogger.shared.log("Audio", "Voice processing enabled (AEC) on iPhone mic")
+                AudioSessionManager.shared.enforcePhoneSpeakerRoute()
             } catch {
                 DiagnosticLogger.shared.log("Audio", "Voice processing unavailable: \(error.localizedDescription)")
                 print("[VoiceCommand] Voice processing enable failed: \(error)")
@@ -246,6 +247,9 @@ final class VoiceCommandService: ObservableObject {
     /// (short phrase) beats `.dictation` (long-form) for a quick wake word + command.
     private func configureRecognitionRequest(_ request: SFSpeechAudioBufferRecognitionRequest) {
         request.shouldReportPartialResults = true
+        if speechRecognizer?.supportsOnDeviceRecognition == true {
+            request.requiresOnDeviceRecognition = true
+        }
         // Short-phrase search while idle for the wake word; full dictation once activated.
         // Using .search for normal questions was hurting Brazilian Portuguese/place-name accuracy.
         request.taskHint = state == .idle ? .search : .dictation

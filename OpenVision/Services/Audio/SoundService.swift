@@ -63,22 +63,37 @@ final class SoundService: ObservableObject {
         // Wake-word "listening" chime — via AVAudioPlayer so it follows the active route (glasses).
         // Falls back to the older ding file if the new asset isn't present.
         let wakeURL = Bundle.main.url(forResource: "wake_activation", withExtension: "mp3")
+            ?? Bundle.main.url(forResource: "wake_activation", withExtension: "mp3", subdirectory: "Sounds")
             ?? Bundle.main.url(forResource: "wake_word_ding", withExtension: "mp3")
+            ?? Bundle.main.url(forResource: "wake_word_ding", withExtension: "mp3", subdirectory: "Sounds")
         if let wakeURL {
             wakeWordPlayer = try? AVAudioPlayer(contentsOf: wakeURL)
             wakeWordPlayer?.prepareToPlay()
+            DiagnosticLogger.shared.log("Audio", "Wake chime asset ready")
+        } else {
+            DiagnosticLogger.shared.log("Audio", "ERROR: wake chime asset not found")
         }
 
         // Thinking loop sound (stays a system sound — ambient, phone-side is fine)
-        if let url = Bundle.main.url(forResource: "thinking_loop", withExtension: "mp3") {
+        if let url = Bundle.main.url(forResource: "thinking_loop", withExtension: "mp3")
+            ?? Bundle.main.url(forResource: "thinking_loop", withExtension: "mp3", subdirectory: "Sounds") {
             AudioServicesCreateSystemSoundID(url as CFURL, &thinkingSoundID)
         }
     }
 
     // MARK: - Wake Word Sound
 
+    /// Preload the acknowledgement sound at app startup so the first wake word does not pay the
+    /// AVAudioPlayer setup cost (or silently fail due to a resource-path issue).
+    func prepare() {
+        ensureSoundsReady()
+    }
+
     func playWakeWordSound() {
-        guard soundEnabled else { return }
+        guard soundEnabled else {
+            DiagnosticLogger.shared.log("Audio", "Wake chime skipped: disabled in settings")
+            return
+        }
         ensureSoundsReady()
 
         // Play on the app's audio session so it routes to the glasses (HFP) when connected.
@@ -86,7 +101,8 @@ final class SoundService: ObservableObject {
         // route is already correct — just restart the player from the top and play.
         if let player = wakeWordPlayer {
             player.currentTime = 0
-            player.play()
+            let started = player.play()
+            DiagnosticLogger.shared.log("Audio", "Wake chime play=\(started) route=\(AudioSessionManager.shared.currentRouteDescription)")
         } else if wakeWordSoundID != 0 {
             AudioServicesPlaySystemSound(wakeWordSoundID)   // fallback
         }

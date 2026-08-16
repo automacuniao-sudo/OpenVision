@@ -250,7 +250,7 @@ final class GeminiLiveService: ObservableObject {
             ]
         ]
 
-        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO voice=\(voiceName) + pt-BR JARVIS instruction")
+        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO voice=\(voiceName) + pt-BR JARVIS + Google Search")
         try await sendJSON(setup)
     }
 
@@ -269,6 +269,8 @@ final class GeminiLiveService: ObservableObject {
         The current date and time is \(now) in the user's local time zone. Base any time on this.
 
         IMPORTANT: when the user asks JARVIS to perform an iPhone action that has a matching tool, CALL THE TOOL instead of merely explaining how to do it.
+
+        INTERNET / CURRENT INFORMATION: Google Search grounding is available in this live session. Use it whenever the user asks to search/pesquisar na internet, or whenever the answer depends on current or time-sensitive information such as sports schedules/results, news, weather, prices, releases, current office-holders, or recent events. Do not say that you cannot browse when Google Search is available. For example, a question such as "qual é o próximo jogo do Corinthians?" should be grounded with Google Search before answering.
 
         Available on-device actions include:
         - device_status: read the real iPhone battery percentage, charging state, Low Power Mode, and iOS version. Use it for questions like "quanto de bateria eu tenho?".
@@ -311,7 +313,14 @@ final class GeminiLiveService: ObservableObject {
     /// notes, clipboard, device status). Gemini nests function declarations under
     /// `tools: [{functionDeclarations:[…]}]`.
     private func buildToolDeclarations() -> [[String: Any]] {
-        [["functionDeclarations": NativeToolRegistry.shared.geminiDeclarations]]
+        // Gemini 3.1 Flash Live supports combining built-in Google Search grounding with our
+        // synchronous native function tools in the SAME Live session. This is what lets JARVIS
+        // answer time-sensitive questions (sports schedules, current news, prices, etc.) instead
+        // of falling back to stale model knowledge or claiming it cannot browse.
+        [
+            ["googleSearch": [:] as [String: Any]],
+            ["functionDeclarations": NativeToolRegistry.shared.geminiDeclarations]
+        ]
     }
 
     // MARK: - Send Audio

@@ -1,5 +1,17 @@
 # Projeto JARVIS build notes
 
+## Build 18
+
+- Enabled Gemini 3.1 Flash Live built-in Google Search grounding alongside the existing native iPhone function tools. Current/time-sensitive questions such as sports schedules can now be searched instead of being refused.
+- Added explicit prompt routing for internet/current-information requests.
+- Fixed wake-word sound asset lookup for both flattened resources and the `Sounds/` bundle directory; preloads the chime and logs whether playback actually started.
+- Hardened phone audio routing: explicitly prefers the built-in mic and re-forces the loudspeaker after voice-processing/AVAudioEngine route renegotiation.
+- Wake-word/command recognition prefers on-device Apple Speech when pt-BR on-device recognition is available.
+- Leaving the Voice tab no longer stops the wake listener; background audio can keep the already-running voice runtime alive after the app has been launched.
+- Added app scene-phase diagnostics and foreground recovery if iOS kills the recognizer during a background/audio interruption.
+- Important iOS boundary: this improves background operation while the app remains running, but a normal third-party app still cannot cold-launch itself from a custom microphone phrase after being force-quit/terminated.
+- App build number is 18.
+
 ## Build 17
 
 - Reworked interruption around the underlying acoustic-echo problem instead of adding more transcript heuristics.

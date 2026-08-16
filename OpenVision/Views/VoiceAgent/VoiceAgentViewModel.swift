@@ -120,7 +120,10 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     func onDisappear() {
-        voiceCommandService.stopListening()
+        // Deliberately keep the wake-word audio runtime alive when the user leaves the Voice tab
+        // or backgrounds the app. UIBackgroundModes=audio is already enabled; tying recognition
+        // to this SwiftUI view made JARVIS stop being hands-free as soon as the tab disappeared.
+        DiagnosticLogger.shared.log("Voice", "Voice view disappeared; keeping wake listener alive")
     }
 
     // MARK: - Observed state changes (forwarded from the view's onChange hooks)

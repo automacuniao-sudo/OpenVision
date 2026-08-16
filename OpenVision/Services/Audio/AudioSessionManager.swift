@@ -162,13 +162,42 @@ final class AudioSessionManager {
             options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP]
         )
         try audioSession.setActive(true)
-        // If still routed to the quiet earpiece (carried over from a glasses/voiceChat config),
-        // force the loud speaker — but leave AirPods / headphones alone if they're connected.
-        if audioSession.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) {
-            try? audioSession.overrideOutputAudioPort(.speaker)
+
+        // `.allowBluetoothHFP` is needed for future route flexibility, but when the user selected
+        // the PHONE mic we must not let an available HFP device silently become the input.
+        if let builtInMic = audioSession.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+            try? audioSession.setPreferredInput(builtInMic)
         }
+
+        enforcePhoneSpeakerRoute()
         currentMode = .voiceChat
+        DiagnosticLogger.shared.log("Audio", "Phone audio configured: \(currentRouteDescription)")
         print("[AudioSession] Configured for phone (built-in mic + loud speaker)")
+
+        // Enabling voice processing / starting AVAudioEngine may renegotiate playAndRecord back to
+        // the receiver a moment later. Reinforce only when the output is still an iPhone built-in
+        // route; never steal audio from headphones/Bluetooth.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+            self?.enforcePhoneSpeakerRoute()
+        }
+    }
+
+    /// Force the loud iPhone speaker only when output is currently a built-in receiver/speaker.
+    /// External Bluetooth/headphone routes are intentionally left untouched.
+    func enforcePhoneSpeakerRoute() {
+        let outputs = audioSession.currentRoute.outputs
+        let hasExternalOutput = outputs.contains { output in
+            output.portType != .builtInReceiver && output.portType != .builtInSpeaker
+        }
+        guard !hasExternalOutput else { return }
+        if outputs.contains(where: { $0.portType == .builtInReceiver }) {
+            do {
+                try audioSession.overrideOutputAudioPort(.speaker)
+                DiagnosticLogger.shared.log("Audio", "Forced loudspeaker route: \(currentRouteDescription)")
+            } catch {
+                DiagnosticLogger.shared.log("Audio", "Speaker override failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// Find Bluetooth HFP input port

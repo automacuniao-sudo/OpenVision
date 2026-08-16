@@ -6,6 +6,8 @@ import MWDATCore
 
 @main
 struct OpenVisionApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     // MARK: - State Objects
 
     @StateObject private var settingsManager = SettingsManager.shared
@@ -21,6 +23,7 @@ struct OpenVisionApp: App {
     init() {
         // Show timer/alarm notifications even when the app is in the foreground.
         NotificationForegroundPresenter.shared.register()
+        SoundService.shared.prepare()
         // Create the location manager on the main thread + warm the cache for contextual notes.
         LocationHelper.shared.prewarm()
 
@@ -56,6 +59,23 @@ struct OpenVisionApp: App {
             .preferredColorScheme(.dark)
             .onOpenURL { url in
                 handleURL(url)
+            }
+            .onChange(of: scenePhase) { phase in
+                DiagnosticLogger.shared.log(
+                    "App",
+                    "Scene phase=\(phase) voiceListening=\(VoiceCommandService.shared.isListening) route=\(AudioSessionManager.shared.currentRouteDescription)"
+                )
+                // If iOS returned us to active after an interruption/background transition and the
+                // recognizer died, revive wake-word listening. Background audio itself keeps the
+                // already-running listener alive; this is a recovery path, not a cold-launch hack.
+                if phase == .active,
+                   SettingsManager.shared.settings.wakeWordEnabled,
+                   VoiceCommandService.shared.authorizationStatus == .authorized,
+                   !VoiceCommandService.shared.isListening {
+                    try? AudioSessionManager.shared.configureForPhone()
+                    try? VoiceCommandService.shared.startListening()
+                    DiagnosticLogger.shared.log("Voice", "Recovered wake listener on app activation")
+                }
             }
         }
     }
