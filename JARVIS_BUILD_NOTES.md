@@ -10,6 +10,7 @@
 - Leaving the Voice tab no longer stops the wake listener; background audio can keep the already-running voice runtime alive after the app has been launched.
 - Added app scene-phase diagnostics and foreground recovery if iOS kills the recognizer during a background/audio interruption.
 - Important iOS boundary: this improves background operation while the app remains running, but a normal third-party app still cannot cold-launch itself from a custom microphone phrase after being force-quit/terminated.
+- Final source commit is ready for the normal unsigned iOS build pipeline.
 - App build number is 18.
 
 ## Build 17
