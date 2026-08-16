@@ -118,15 +118,9 @@ final class VoiceCommandService: ObservableObject {
     /// Tracks if user has started speaking in this turn
     private var hasSpokenThisTurn: Bool = false
 
-    // MARK: - Audio Feedback
-
-    private var activationSound: AVAudioPlayer?
-
     // MARK: - Initialization
 
-    private init() {
-        setupActivationSound()
-    }
+    private init() {}
 
     // MARK: - Authorization
 
@@ -754,11 +748,6 @@ final class VoiceCommandService: ObservableObject {
             self?.wakeWordCooldownActive = false
         }
 
-        // Play activation sound
-        if playActivationSound {
-            playActivation()
-        }
-
         // Transition to listening and rebuild recognition in dictation mode.
         state = .listening
         currentTranscription = ""
@@ -864,21 +853,7 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    // MARK: - Audio Feedback
 
-    /// Setup activation sound
-    private func setupActivationSound() {
-        if let soundURL = Bundle.main.url(forResource: "activation_chime", withExtension: "wav") {
-            activationSound = try? AVAudioPlayer(contentsOf: soundURL)
-            activationSound?.prepareToPlay()
-        }
-    }
-
-    /// Play activation sound
-    private func playActivation() {
-        activationSound?.currentTime = 0
-        activationSound?.play()
-    }
 }
 
 // MARK: - Errors

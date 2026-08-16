@@ -68,8 +68,10 @@ final class SoundService: ObservableObject {
             ?? Bundle.main.url(forResource: "wake_word_ding", withExtension: "mp3", subdirectory: "Sounds")
         if let wakeURL {
             wakeWordPlayer = try? AVAudioPlayer(contentsOf: wakeURL)
+            wakeWordPlayer?.volume = 1.0
             wakeWordPlayer?.prepareToPlay()
-            DiagnosticLogger.shared.log("Audio", "Wake chime asset ready")
+            let durationMs = Int((wakeWordPlayer?.duration ?? 0) * 1000)
+            DiagnosticLogger.shared.log("Audio", "Wake chime asset ready duration=\(durationMs)ms")
         } else {
             DiagnosticLogger.shared.log("Audio", "ERROR: wake chime asset not found")
         }
@@ -100,9 +102,18 @@ final class SoundService: ObservableObject {
         // The wake-word recognizer keeps a .playAndRecord session active, so the current output
         // route is already correct — just restart the player from the top and play.
         if let player = wakeWordPlayer {
+            // The wake listener uses playAndRecord. Re-assert the phone loudspeaker immediately
+            // before the acknowledgement sound so a stale receiver/voice route cannot swallow it.
+            if AudioSessionManager.shared.isUsingBuiltInMic {
+                AudioSessionManager.shared.enforcePhoneSpeakerRoute()
+            }
+            player.volume = 1.0
             player.currentTime = 0
             let started = player.play()
-            DiagnosticLogger.shared.log("Audio", "Wake chime play=\(started) route=\(AudioSessionManager.shared.currentRouteDescription)")
+            DiagnosticLogger.shared.log(
+                "Audio",
+                "Wake chime play=\(started) route=\(AudioSessionManager.shared.currentRouteDescription) systemVolume=\(Int(AudioSessionManager.shared.systemOutputVolume * 100))%"
+            )
         } else if wakeWordSoundID != 0 {
             AudioServicesPlaySystemSound(wakeWordSoundID)   // fallback
         }

@@ -366,6 +366,19 @@ final class VoiceAgentViewModel: ObservableObject {
            AudioSessionManager.shared.isBluetoothHFPActive, voiceCommandService.isListening {
             return
         }
+
+        // Phone-only wake path: if the persistent listener is already using the built-in mic/output,
+        // do NOT stop/restart the audio engine at the exact moment the acknowledgement chime starts.
+        // Just re-assert speakerphone routing. This preserves the chime and avoids the low-volume
+        // receiver renegotiation observed after saying the wake phrase.
+        if voiceCommandService.isListening,
+           AudioSessionManager.shared.isUsingBuiltInMic,
+           AudioSessionManager.shared.isUsingBuiltInOutput {
+            AudioSessionManager.shared.enforcePhoneSpeakerRoute()
+            DiagnosticLogger.shared.log("Audio", "Wake session reused existing phone audio route")
+            return
+        }
+
         let wasListening = voiceCommandService.isListening
         if wasListening { voiceCommandService.stopListening() }
         applyPreferredAudioRoute()

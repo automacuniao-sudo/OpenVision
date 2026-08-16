@@ -1,5 +1,16 @@
 # Projeto JARVIS build notes
 
+## Build 20
+
+- Fixed the missing wake acknowledgement sound by eliminating audio-session churn immediately after wake detection and making SoundService the single chime owner.
+- Wake chime now re-asserts the built-in loudspeaker before playback, uses full app-level player gain, and logs asset duration, route, and system volume.
+- Phone hands-free audio uses AVAudioSession videoChat mode plus explicit speaker override while retaining AVAudioEngine voice processing/AEC.
+- Speaker override is now re-asserted even when iOS already labels the route as built-in Speaker, because route renegotiation can leave a low voice-output path behind.
+- Gemini PCM playback re-asserts the phone loudspeaker after its playback engine starts and at the beginning of each fresh reply.
+- Added richer audio diagnostics (route + read-only system volume) to distinguish routing problems from the user's hardware volume setting.
+- Removed the obsolete VoiceCommandService activation_chime.wav player; that resource does not exist and duplicated SoundService behavior.
+- App build number is 20.
+
 ## Build 19
 
 - Fixed build 18 backend regression for free-tier Gemini keys.

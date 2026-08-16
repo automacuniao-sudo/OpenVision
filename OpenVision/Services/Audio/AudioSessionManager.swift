@@ -158,7 +158,7 @@ final class AudioSessionManager {
     func configureForPhone() throws {
         try audioSession.setCategory(
             .playAndRecord,
-            mode: .voiceChat,
+            mode: .videoChat,
             options: [.defaultToSpeaker, .allowBluetoothHFP, .allowBluetoothA2DP]
         )
         try audioSession.setActive(true)
@@ -190,13 +190,19 @@ final class AudioSessionManager {
             output.portType != .builtInReceiver && output.portType != .builtInSpeaker
         }
         guard !hasExternalOutput else { return }
-        if outputs.contains(where: { $0.portType == .builtInReceiver }) {
-            do {
-                try audioSession.overrideOutputAudioPort(.speaker)
-                DiagnosticLogger.shared.log("Audio", "Forced loudspeaker route: \(currentRouteDescription)")
-            } catch {
-                DiagnosticLogger.shared.log("Audio", "Speaker override failed: \(error.localizedDescription)")
-            }
+        // Do not rely only on currentRoute reporting `.builtInSpeaker`. Voice-processing /
+        // playAndRecord renegotiation can leave the session on a low speakerphone gain path while
+        // the route label already says Speaker. Re-asserting the speaker override is cheap and
+        // deterministic for the built-in phone route; Apple documents that this explicitly routes
+        // playAndRecord to the built-in speaker + mic until the next route change.
+        do {
+            try audioSession.overrideOutputAudioPort(.speaker)
+            DiagnosticLogger.shared.log(
+                "Audio",
+                "Forced loudspeaker route: \(currentRouteDescription) systemVolume=\(Int(audioSession.outputVolume * 100))%"
+            )
+        } catch {
+            DiagnosticLogger.shared.log("Audio", "Speaker override failed: \(error.localizedDescription)")
         }
     }
 
@@ -253,4 +259,15 @@ final class AudioSessionManager {
             port.portType == .builtInMic
         }
     }
+
+    /// Check if output is one of the iPhone's built-in outputs (receiver or loud speaker).
+    var isUsingBuiltInOutput: Bool {
+        let outputs = audioSession.currentRoute.outputs
+        return !outputs.isEmpty && outputs.allSatisfy {
+            $0.portType == .builtInReceiver || $0.portType == .builtInSpeaker
+        }
+    }
+
+    /// Read-only system volume for diagnostics. iOS intentionally allows only the user to change it.
+    var systemOutputVolume: Float { audioSession.outputVolume }
 }

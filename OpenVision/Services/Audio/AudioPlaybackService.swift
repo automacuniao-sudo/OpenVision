@@ -62,8 +62,14 @@ final class AudioPlaybackService: ObservableObject {
         }
 
         try engine.start()
+        if AudioSessionManager.shared.isUsingBuiltInMic {
+            AudioSessionManager.shared.enforcePhoneSpeakerRoute()
+        }
         print("[AudioPlayback] Engine started")
-        DiagnosticLogger.shared.log("Audio", "Playback engine started format=\(outputFormat.sampleRate)Hz/\(outputFormat.channelCount)ch")
+        DiagnosticLogger.shared.log(
+            "Audio",
+            "Playback engine started format=\(outputFormat.sampleRate)Hz/\(outputFormat.channelCount)ch route=\(AudioSessionManager.shared.currentRouteDescription) systemVolume=\(Int(AudioSessionManager.shared.systemOutputVolume * 100))%"
+        )
     }
 
     /// Teardown audio engine
@@ -106,6 +112,12 @@ final class AudioPlaybackService: ObservableObject {
         guard let buffer = createBuffer(from: resampledSamples, format: outputFormat) else {
             print("[AudioPlayback] Failed to create buffer")
             return
+        }
+
+        // At the start of a fresh reply, re-assert speakerphone routing. Route changes caused
+        // by voice processing/background transitions can happen between responses.
+        if scheduledBufferCount == 0, AudioSessionManager.shared.isUsingBuiltInMic {
+            AudioSessionManager.shared.enforcePhoneSpeakerRoute()
         }
 
         // Schedule and play. Track queue depth ourselves: AVAudioPlayerNode.isPlaying
