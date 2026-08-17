@@ -1,5 +1,15 @@
 # Projeto JARVIS build notes
 
+## Build 21
+
+- Investigated current Google service health: no broad severe Gemini outage is publicly reported at this time; current official Gemini docs still support Google Search grounding on Gemini 2.5 Flash/Flash-Lite.
+- Hardened `web_search`: Gemini 2.5 Flash-Lite is now the primary low-latency search model, with Gemini 2.5 Flash fallback.
+- Added retry/backoff for transient 429/5xx/network failures instead of failing immediately after one REST request.
+- Search diagnostics now record model, attempt, HTTP/transport error, transient classification, and successful completion without logging the private query text.
+- Increased built-in iPhone JARVIS PCM loudness in software by 2.5x with a limiter. Bluetooth/glasses playback remains at unity gain.
+- Added PCM peak/gain diagnostics so low source amplitude can be distinguished from a routing/system-volume problem.
+- App build number is 21.
+
 ## Build 20
 
 - Fixed the missing wake acknowledgement sound by eliminating audio-session churn immediately after wake detection and making SoundService the single chime owner.
@@ -21,7 +31,7 @@
 
 ## Build 18
 
-- Enabled Gemini 3.1 Flash Live built-in Google Search grounding alongside the existing native iPhone function tools. Current/time-sensitive questions such as sports schedules can now be searched instead of being refused.
+- Enabled Gemini 3.1 Flash Live built-in Google Search grounding alongside the existing native iPhone function tools. Current/time-sensitive questions such as sports schedules/results can now be searched instead of being refused.
 - Added explicit prompt routing for internet/current-information requests.
 - Fixed wake-word sound asset lookup for both flattened resources and the `Sounds/` bundle directory; preloads the chime and logs whether playback actually started.
 - Hardened phone audio routing: explicitly prefers the built-in mic and re-forces the loudspeaker after voice-processing/AVAudioEngine route renegotiation.
