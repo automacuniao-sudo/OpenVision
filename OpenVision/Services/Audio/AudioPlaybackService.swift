@@ -26,10 +26,16 @@ final class AudioPlaybackService: ObservableObject {
     private var scheduledBufferCount = 0
     private var playbackGeneration = 0
 
-    // MARK: - Format
+    // MARK: - Format / gain
 
     /// Expected input sample rate (from Gemini)
     var inputSampleRate: Double = Double(Constants.GeminiLive.outputSampleRate)
+
+    /// The Gemini native PCM stream is noticeably quieter than normal iPhone media even when the
+    /// hardware volume is at 100%. Route forcing cannot fix source amplitude, so give built-in
+    /// iPhone playback a controlled software boost. External Bluetooth/glasses audio is left at
+    /// unity gain because those devices have their own gain characteristics.
+    private let phoneSoftwareGain: Float = 2.5
 
     // MARK: - Initialization
 
@@ -109,7 +115,25 @@ final class AudioPlaybackService: ObservableObject {
             resampledSamples = floatSamples
         }
 
-        guard let buffer = createBuffer(from: resampledSamples, format: outputFormat) else {
+        // The phone route is confirmed as loudspeaker, yet Gemini PCM can still be far below normal
+        // media loudness. Boost ONLY the built-in iPhone output and hard-limit just below full scale
+        // to avoid digital overflow/clipping. This preserves Bluetooth/glasses level unchanged.
+        let playbackSamples: [Float]
+        if AudioSessionManager.shared.isUsingBuiltInOutput {
+            playbackSamples = applyPhoneSoftwareGain(resampledSamples)
+            if scheduledBufferCount == 0 {
+                let inputPeak = peak(of: resampledSamples)
+                let outputPeak = peak(of: playbackSamples)
+                DiagnosticLogger.shared.log(
+                    "Audio",
+                    "Phone PCM gain=\(String(format: "%.1f", phoneSoftwareGain))x inputPeak=\(String(format: "%.3f", inputPeak)) outputPeak=\(String(format: "%.3f", outputPeak))"
+                )
+            }
+        } else {
+            playbackSamples = resampledSamples
+        }
+
+        guard let buffer = createBuffer(from: playbackSamples, format: outputFormat) else {
             print("[AudioPlayback] Failed to create buffer")
             return
         }
@@ -152,7 +176,7 @@ final class AudioPlaybackService: ObservableObject {
         DiagnosticLogger.shared.log("Audio", "Playback stopped / queue cleared")
     }
 
-    // MARK: - Conversion
+    // MARK: - Conversion / level
 
     /// Convert Int16 PCM data to Float32 samples
     private func convertFromInt16PCM(_ data: Data) -> [Float] {
@@ -167,6 +191,17 @@ final class AudioPlaybackService: ObservableObject {
         }
 
         return samples
+    }
+
+    private func applyPhoneSoftwareGain(_ samples: [Float]) -> [Float] {
+        samples.map { sample in
+            let boosted = sample * phoneSoftwareGain
+            return min(0.98, max(-0.98, boosted))
+        }
+    }
+
+    private func peak(of samples: [Float]) -> Float {
+        samples.reduce(0) { max($0, abs($1)) }
     }
 
     /// Simple linear resampling
