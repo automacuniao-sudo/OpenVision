@@ -118,6 +118,10 @@ final class VoiceCommandService: ObservableObject {
     /// Tracks if user has started speaking in this turn
     private var hasSpokenThisTurn: Bool = false
 
+    /// Timestamp of the most recent non-empty Apple Speech partial for the active command. Used
+    /// to measure the real local endpointing delay (last STT update -> command dispatch).
+    private var lastSpeechRecognitionUpdateAt: Date?
+
     // MARK: - Initialization
 
     private init() {}
@@ -331,8 +335,9 @@ final class VoiceCommandService: ObservableObject {
 
         hasSpokenThisTurn = false
         currentTranscription = ""
+        lastSpeechRecognitionUpdateAt = nil
 
-        // Start conversation timeout (exits if no speech for 4 seconds)
+        // Start conversation timeout (exits if no speech for the configured conversation window)
         startConversationTimeout()
 
         print("[VoiceCommand] Entered conversation mode")
@@ -505,6 +510,9 @@ final class VoiceCommandService: ObservableObject {
                 }
             }
             currentTranscription = command
+            if !command.isEmpty {
+                lastSpeechRecognitionUpdateAt = Date()
+            }
 
             // Mark that user has started speaking
             if command.count > 3 {
@@ -756,6 +764,7 @@ final class VoiceCommandService: ObservableObject {
         // Transition to listening and rebuild recognition in dictation mode.
         state = .listening
         currentTranscription = ""
+        lastSpeechRecognitionUpdateAt = nil
         restartRecognition()
 
         // Start command timeout
@@ -778,6 +787,13 @@ final class VoiceCommandService: ObservableObject {
         }
 
         guard !command.isEmpty else { return }
+
+        if let lastUpdate = lastSpeechRecognitionUpdateAt {
+            let endpointMs = Int(Date().timeIntervalSince(lastUpdate) * 1000)
+            let profile = TurnEndpointing.isLikelyComplete(command) ? "fast" : "grace"
+            DiagnosticLogger.shared.log("Latency", "STT last-partial→command=\(endpointMs)ms profile=\(profile)")
+        }
+        lastSpeechRecognitionUpdateAt = nil
 
         print("[VoiceCommand] Command captured: \(command)")
         DiagnosticLogger.shared.log("Voice", "Command captured: \(command)")
@@ -813,10 +829,13 @@ final class VoiceCommandService: ObservableObject {
 
     // MARK: - Timers
 
-    /// Reset silence timer
+    /// Reset silence timer using Portuguese-aware adaptive endpointing. Complete-looking
+    /// phrases commit quickly; dangling phrases keep a generous window so natural pauses are not
+    /// cut off.
     private func resetSilenceTimer() {
         silenceTimer?.invalidate()
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: Constants.Voice.silenceTimeout, repeats: false) { [weak self] _ in
+        let timeout = TurnEndpointing.silenceTimeout(for: currentTranscription)
+        silenceTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 self?.handleSilenceTimeout()
             }

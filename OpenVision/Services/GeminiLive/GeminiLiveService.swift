@@ -54,6 +54,17 @@ final class GeminiLiveService: ObservableObject {
     private var receiveTask: Task<Void, Never>?
     private var isSetupComplete: Bool = false
 
+    // MARK: - Session Resumption / Recovery
+
+    /// Latest resumable state handle supplied by Gemini Live. It is intentionally kept only in
+    /// memory and never written to Diagnostics. A normal user-ended conversation clears it; an
+    /// unexpected socket reset keeps it so the new WebSocket can resume the same session.
+    private var sessionResumptionHandle: String?
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAfterTurn = false
+    private var intentionalDisconnect = false
+    private let maxReconnectAttempts = 4
+
     // MARK: - Normal voice-mode playback
 
     /// In normal Gemini voice mode the ViewModel does not install an audio callback (that callback
@@ -75,6 +86,10 @@ final class GeminiLiveService: ObservableObject {
     // MARK: - Latency Tracking
 
     private var lastUserSpeechEnd: Date?
+    private var currentTurnSentAt: Date?
+    private var firstPCMSeenForTurn = false
+    private var lastPCMReceivedAt: Date?
+    private var maxPCMGapMs: Double = 0
 
     // MARK: - Initialization
 
@@ -92,6 +107,8 @@ final class GeminiLiveService: ObservableObject {
 
     /// Connect to Gemini Live API
     func connect() async throws {
+        intentionalDisconnect = false
+
         guard !apiKey.isEmpty else {
             throw AIBackendError.notConfigured
         }
@@ -101,7 +118,7 @@ final class GeminiLiveService: ObservableObject {
 
         connectionState = .connecting
         onConnectionStateChanged?(connectionState)
-        DiagnosticLogger.shared.log("Gemini", "Connecting model=\(Constants.GeminiLive.modelName) voice=\(voiceName)")
+        DiagnosticLogger.shared.log("Gemini", "Connecting model=\(Constants.GeminiLive.modelName) voice=\(voiceName) resume=\(sessionResumptionHandle != nil)")
 
         do {
             let url = buildWebSocketURL()
@@ -147,7 +164,7 @@ final class GeminiLiveService: ObservableObject {
             connectionState = .connected
             onConnectionStateChanged?(connectionState)
             print("[GeminiLive] Connected")
-            DiagnosticLogger.shared.log("Gemini", "Connected and setup complete")
+            DiagnosticLogger.shared.log("Gemini", "Connected and setup complete resume=\(sessionResumptionHandle != nil)")
 
         } catch {
             lastError = error.localizedDescription
@@ -164,7 +181,12 @@ final class GeminiLiveService: ObservableObject {
         guard connectionState != .disconnected else { return }
 
         print("[GeminiLive] Disconnecting")
-        DiagnosticLogger.shared.log("Gemini", "Disconnecting")
+        DiagnosticLogger.shared.log("Gemini", "Disconnecting (intentional)")
+        intentionalDisconnect = true
+        reconnectAfterTurn = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        sessionResumptionHandle = nil
         connectionState = .disconnected
         onConnectionStateChanged?(connectionState)
         closeWebSocket()
@@ -212,6 +234,11 @@ final class GeminiLiveService: ObservableObject {
 
     /// Send setup message to configure the session
     private func sendSetup() async throws {
+        var resumption: [String: Any] = [:]
+        if let handle = sessionResumptionHandle {
+            resumption["handle"] = handle
+        }
+
         let setup: [String: Any] = [
             "setup": [
                 "model": Constants.GeminiLive.modelName,
@@ -246,11 +273,12 @@ final class GeminiLiveService: ObservableObject {
                 ],
                 "inputAudioTranscription": [:] as [String: Any],
                 "outputAudioTranscription": [:] as [String: Any],
+                "sessionResumption": resumption,
                 "tools": buildToolDeclarations()
             ]
         ]
 
-        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO voice=\(voiceName) + pt-BR JARVIS + native tools")
+        DiagnosticLogger.shared.log("Gemini", "Sending session setup: AUDIO voice=\(voiceName) + pt-BR JARVIS + native tools + sessionResumption")
         try await sendJSON(setup)
     }
 
@@ -347,9 +375,10 @@ final class GeminiLiveService: ObservableObject {
     /// Gemini 3.1 only supports clientContent for seeding initial history;
     /// conversational text turns must use realtimeInput.text.
     func sendText(_ text: String) async throws {
-        guard connectionState.isUsable else {
-            throw AIBackendError.notConnected
+        if !connectionState.isUsable {
+            try await reconnectImmediately(reason: "text turn while disconnected")
         }
+
         // Record the utterance for the tool registry's relative-time guard.
         NativeToolContext.shared.set(text)
 
@@ -364,8 +393,20 @@ final class GeminiLiveService: ObservableObject {
             ]
         ]
 
+        currentTurnSentAt = Date()
+        firstPCMSeenForTurn = false
+        lastPCMReceivedAt = nil
+        maxPCMGapMs = 0
+
         DiagnosticLogger.shared.log("Gemini", "Sending text turn: \(text)")
-        try await sendJSON(message)
+        do {
+            try await sendJSON(message)
+        } catch {
+            DiagnosticLogger.shared.log("Gemini", "Text send failed; reconnecting once: \(error.localizedDescription)")
+            try await reconnectImmediately(reason: "text send failure")
+            try await sendJSON(message)
+            DiagnosticLogger.shared.log("Gemini", "Text turn resent after reconnect")
+        }
     }
 
     /// Interrupt local playback immediately for barge-in. The next realtimeInput.text
@@ -435,7 +476,7 @@ final class GeminiLiveService: ObservableObject {
                     if !Task.isCancelled {
                         print("[GeminiLive] Receive error: \(error)")
                         DiagnosticLogger.shared.log("Gemini", "Receive error: \(error.localizedDescription)")
-                        await self.handleDisconnect()
+                        await self.handleDisconnect(reason: "receive error: \(error.localizedDescription)")
                     }
                     break
                 }
@@ -448,6 +489,18 @@ final class GeminiLiveService: ObservableObject {
         guard let data = extractData(from: message),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return
+        }
+
+        // Session resumption updates are sent only when sessionResumption was configured in
+        // setup. Keep the newest resumable handle so a replacement WebSocket can preserve context.
+        if let update = json["sessionResumptionUpdate"] as? [String: Any] {
+            let resumable = update["resumable"] as? Bool ?? false
+            if resumable, let handle = update["newHandle"] as? String, !handle.isEmpty {
+                sessionResumptionHandle = handle
+                DiagnosticLogger.shared.log("Gemini", "Session resumption handle updated (resumable=true)")
+            } else if !resumable {
+                DiagnosticLogger.shared.log("Gemini", "Session resumption update resumable=false")
+            }
         }
 
         // Setup complete
@@ -487,10 +540,18 @@ final class GeminiLiveService: ObservableObject {
             return
         }
 
-        // Go away (server closing connection)
-        if json["goAway"] != nil {
-            print("[GeminiLive] Server requested disconnect")
-            await handleDisconnect()
+        // GoAway is an advance warning that Gemini will close this WebSocket. If a response
+        // is currently generating, let it finish and reconnect immediately after the turn; otherwise
+        // replace the socket now using the latest resumable handle.
+        if let goAway = json["goAway"] as? [String: Any] {
+            let timeLeft = String(describing: goAway["timeLeft"] ?? "unknown")
+            DiagnosticLogger.shared.log("Gemini", "GoAway received timeLeft=\(timeLeft)")
+            if isProcessing || isModelSpeaking {
+                reconnectAfterTurn = true
+                DiagnosticLogger.shared.log("Gemini", "GoAway recovery deferred until turn complete")
+            } else {
+                scheduleReconnect(reason: "GoAway timeLeft=\(timeLeft)")
+            }
             return
         }
     }
@@ -541,6 +602,21 @@ final class GeminiLiveService: ObservableObject {
                         DiagnosticLogger.shared.log("GeminiAudio", "Discarded old PCM chunk bytes=\(audioData.count)")
                         continue
                     }
+
+                    let pcmNow = Date()
+                    if !firstPCMSeenForTurn, let sentAt = currentTurnSentAt {
+                        firstPCMSeenForTurn = true
+                        let firstMs = Int(pcmNow.timeIntervalSince(sentAt) * 1000)
+                        DiagnosticLogger.shared.log("Latency", "Gemini send→firstPCM=\(firstMs)ms")
+                    }
+                    if let previousPCM = lastPCMReceivedAt {
+                        let gapMs = pcmNow.timeIntervalSince(previousPCM) * 1000
+                        maxPCMGapMs = max(maxPCMGapMs, gapMs)
+                        if gapMs >= 500 {
+                            DiagnosticLogger.shared.log("Latency", "Gemini PCM gap=\(Int(gapMs))ms")
+                        }
+                    }
+                    lastPCMReceivedAt = pcmNow
 
                     isModelSpeaking = true
                     isProcessing = true
@@ -619,8 +695,23 @@ final class GeminiLiveService: ObservableObject {
         pendingTurnComplete = false
         isModelSpeaking = false
         isProcessing = false
+
+        if let sentAt = currentTurnSentAt {
+            let totalMs = Int(Date().timeIntervalSince(sentAt) * 1000)
+            DiagnosticLogger.shared.log("Latency", "Gemini send→turnComplete=\(totalMs)ms maxPCMGap=\(Int(maxPCMGapMs))ms")
+        }
+        currentTurnSentAt = nil
+        firstPCMSeenForTurn = false
+        lastPCMReceivedAt = nil
+        maxPCMGapMs = 0
+
         DiagnosticLogger.shared.log("Gemini", "Turn complete")
         onTurnComplete?()
+
+        if reconnectAfterTurn {
+            reconnectAfterTurn = false
+            scheduleReconnect(reason: "deferred GoAway after turn")
+        }
     }
 
     /// Handle a tool call from Gemini: run each requested native tool and send the results back as a
@@ -650,11 +741,85 @@ final class GeminiLiveService: ObservableObject {
         }
     }
 
-    /// Handle disconnect
-    private func handleDisconnect() async {
+    /// Replace a dead socket synchronously when the current user turn needs to be sent now.
+    /// The latest session-resumption handle is preserved.
+    private func reconnectImmediately(reason: String) async throws {
+        guard !intentionalDisconnect else { throw AIBackendError.notConnected }
+        DiagnosticLogger.shared.log("Gemini", "Immediate reconnect: \(reason) resume=\(sessionResumptionHandle != nil)")
+        closeWebSocket()
         connectionState = .disconnected
         onConnectionStateChanged?(connectionState)
+        try await connect()
+    }
+
+    /// Schedule bounded reconnect attempts for receive failures and GoAway. The service keeps the
+    /// conversation alive instead of notifying the ViewModel that the backend is permanently gone
+    /// after the first transport hiccup.
+    private func scheduleReconnect(reason: String) {
+        guard !intentionalDisconnect else { return }
+        guard reconnectTask == nil else { return }
+
+        DiagnosticLogger.shared.log("Gemini", "Scheduling reconnect: \(reason) resume=\(sessionResumptionHandle != nil)")
         closeWebSocket()
-        onDisconnected?()
+        connectionState = .disconnected
+        onConnectionStateChanged?(connectionState)
+
+        reconnectTask = Task { [weak self] in
+            guard let self else { return }
+            var lastReconnectError: Error?
+
+            for attempt in 1...self.maxReconnectAttempts {
+                if Task.isCancelled || self.intentionalDisconnect {
+                    self.reconnectTask = nil
+                    return
+                }
+
+                if attempt > 1 {
+                    let delay = min(pow(2.0, Double(attempt - 2)), 4.0)
+                    DiagnosticLogger.shared.log("Gemini", "Reconnect backoff=\(String(format: "%.1f", delay))s")
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+
+                guard !Task.isCancelled, !self.intentionalDisconnect else {
+                    self.reconnectTask = nil
+                    return
+                }
+
+                DiagnosticLogger.shared.log("Gemini", "Reconnect attempt \(attempt)/\(self.maxReconnectAttempts)")
+                self.closeWebSocket()
+                self.connectionState = .disconnected
+                self.onConnectionStateChanged?(self.connectionState)
+
+                do {
+                    try await self.connect()
+                    DiagnosticLogger.shared.log("Gemini", "Reconnect succeeded attempt=\(attempt) resume=\(self.sessionResumptionHandle != nil)")
+                    self.reconnectTask = nil
+                    return
+                } catch {
+                    lastReconnectError = error
+                    DiagnosticLogger.shared.log("Gemini", "Reconnect attempt \(attempt) failed: \(error.localizedDescription)")
+                }
+            }
+
+            self.reconnectTask = nil
+            let message = lastReconnectError?.localizedDescription ?? "reconnect failed"
+            self.lastError = message
+            self.connectionState = .failed(message)
+            self.onConnectionStateChanged?(self.connectionState)
+            DiagnosticLogger.shared.log("Gemini", "Reconnect exhausted: \(message)")
+            self.onDisconnected?()
+        }
+    }
+
+    /// Handle an unexpected receive-side disconnect.
+    private func handleDisconnect(reason: String) async {
+        if intentionalDisconnect {
+            connectionState = .disconnected
+            onConnectionStateChanged?(connectionState)
+            closeWebSocket()
+            onDisconnected?()
+            return
+        }
+        scheduleReconnect(reason: reason)
     }
 }

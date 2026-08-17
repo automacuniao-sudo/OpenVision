@@ -1,5 +1,17 @@
 # Projeto JARVIS build notes
 
+## Build 23
+
+- Latency: replaced the fixed 4.0-second voice endpoint delay with Brazilian-Portuguese adaptive endpointing (0.9s for complete-looking phrases, 3.0s grace for unfinished/filler fragments).
+- Diagnostics: logs local STT endpoint delay as `STT last-partial→command`, Gemini `send→firstPCM`, large PCM packet gaps, full turn duration, and maximum packet gap.
+- Gemini Live stability: enabled official session resumption and retains the latest resumable handle in memory across unexpected WebSocket replacements.
+- Gemini Live stability: handles `GoAway` proactively; reconnects immediately when idle or after the active response finishes.
+- Gemini Live stability: receive-side socket failures now use bounded exponential-backoff reconnect instead of leaving the conversation on a dead backend.
+- Gemini Live stability: text send failures reconnect once synchronously and resend the turn.
+- Intentional conversation shutdown still clears the resumption handle so a future `Ok Jarvis` starts a clean session.
+- Audio routing/gain, AEC, barge-in, wake chime, web search and tool behavior are intentionally unchanged in this build.
+- App build number is 23.
+
 ## Build 22
 
 - Audio: compared the current path with the clean build-12/13 PCM path; removed the build-21 2.5x hard-limited software gain that caused clipping/"chiado". Gemini PCM is back at unity gain.

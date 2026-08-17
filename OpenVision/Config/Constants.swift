@@ -86,7 +86,7 @@ enum Constants {
         /// Command capture timeout (seconds)
         static let commandTimeout: TimeInterval = 10.0
 
-        /// Silence timeout to end command capture (seconds)
+        /// Legacy/fallback silence timeout. Normal voice turns use TurnEndpointing instead.
         static let silenceTimeout: TimeInterval = 4.0
 
         /// Default conversation timeout (seconds)
