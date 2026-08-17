@@ -26,16 +26,10 @@ final class AudioPlaybackService: ObservableObject {
     private var scheduledBufferCount = 0
     private var playbackGeneration = 0
 
-    // MARK: - Format / gain
+    // MARK: - Format
 
     /// Expected input sample rate (from Gemini)
     var inputSampleRate: Double = Double(Constants.GeminiLive.outputSampleRate)
-
-    /// The Gemini native PCM stream is noticeably quieter than normal iPhone media even when the
-    /// hardware volume is at 100%. Route forcing cannot fix source amplitude, so give built-in
-    /// iPhone playback a controlled software boost. External Bluetooth/glasses audio is left at
-    /// unity gain because those devices have their own gain characteristics.
-    private let phoneSoftwareGain: Float = 2.5
 
     // MARK: - Initialization
 
@@ -115,22 +109,15 @@ final class AudioPlaybackService: ObservableObject {
             resampledSamples = floatSamples
         }
 
-        // The phone route is confirmed as loudspeaker, yet Gemini PCM can still be far below normal
-        // media loudness. Boost ONLY the built-in iPhone output and hard-limit just below full scale
-        // to avoid digital overflow/clipping. This preserves Bluetooth/glasses level unchanged.
-        let playbackSamples: [Float]
-        if AudioSessionManager.shared.isUsingBuiltInOutput {
-            playbackSamples = applyPhoneSoftwareGain(resampledSamples)
-            if scheduledBufferCount == 0 {
-                let inputPeak = peak(of: resampledSamples)
-                let outputPeak = peak(of: playbackSamples)
-                DiagnosticLogger.shared.log(
-                    "Audio",
-                    "Phone PCM gain=\(String(format: "%.1f", phoneSoftwareGain))x inputPeak=\(String(format: "%.3f", inputPeak)) outputPeak=\(String(format: "%.3f", outputPeak))"
-                )
-            }
-        } else {
-            playbackSamples = resampledSamples
+        // Keep Gemini PCM at unity gain, matching the clean playback path from builds 12/13.
+        // The build-21 2.5x hard-limited boost clipped the waveform but could not overcome the
+        // downstream voice-processing ducking, producing exactly the "estourado mas baixo" symptom.
+        let playbackSamples = resampledSamples
+        if scheduledBufferCount == 0 {
+            DiagnosticLogger.shared.log(
+                "Audio",
+                "PCM unity gain peak=\(String(format: "%.3f", peak(of: playbackSamples))) route=\(AudioSessionManager.shared.currentRouteDescription)"
+            )
         }
 
         guard let buffer = createBuffer(from: playbackSamples, format: outputFormat) else {
@@ -191,13 +178,6 @@ final class AudioPlaybackService: ObservableObject {
         }
 
         return samples
-    }
-
-    private func applyPhoneSoftwareGain(_ samples: [Float]) -> [Float] {
-        samples.map { sample in
-            let boosted = sample * phoneSoftwareGain
-            return min(0.98, max(-0.98, boosted))
-        }
     }
 
     private func peak(of samples: [Float]) -> Float {

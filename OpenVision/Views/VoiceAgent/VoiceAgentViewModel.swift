@@ -567,6 +567,11 @@ final class VoiceAgentViewModel: ObservableObject {
             }
 
             self.userTranscript = command
+            // Gemini Live output transcription is streamed in small fragments. Reset the reply
+            // accumulator at the start of EVERY captured command so History stores one complete
+            // assistant message for this turn rather than the final fragment only.
+            self.aiTranscript = ""
+            self.historyLastLiveReply = ""
 
             // History: every captured command is a user message (Meta AI records all glasses
             // prompts to its History tab; same idea, on-device).
@@ -719,7 +724,10 @@ final class VoiceAgentViewModel: ObservableObject {
 
         // Gemini Live callbacks (for Gemini Live mode, not hybrid)
         GeminiLiveService.shared.onOutputTranscription = { [weak self] (text: String) in
-            self?.aiTranscript = text
+            guard let self else { return }
+            // Gemini sends outputAudioTranscription incrementally (often word/phrase fragments).
+            // Preserve the full reply for the live UI and persisted History.
+            self.aiTranscript += text
         }
 
         GeminiLiveService.shared.onTurnComplete = { [weak self] in
@@ -1646,7 +1654,9 @@ final class VoiceAgentViewModel: ObservableObject {
         let user = userTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         let reply = aiTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !reply.isEmpty, reply != historyLastLiveReply else { return }
-        if !user.isEmpty { ConversationManager.shared.addUserMessage(user) }
+        // Normal wake-word commands were already persisted by onCommandCaptured. Live-video /
+        // realtime paths bypass that callback, so only those need the user message added here.
+        if !historyAwaitingReply, !user.isEmpty { ConversationManager.shared.addUserMessage(user) }
         ConversationManager.shared.addAssistantMessage(reply)
         historyLastLiveReply = reply
         historyAwaitingReply = false

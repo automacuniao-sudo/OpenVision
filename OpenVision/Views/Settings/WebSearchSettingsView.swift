@@ -41,7 +41,7 @@ struct WebSearchSettingsView: View {
             } header: {
                 Text("Help")
             } footer: {
-                Text("Tavily is a search API built for AI assistants — it returns real, current content (news, prices, scores) rather than just links, which is what lets the model actually answer live questions. The free tier covers everyday use. When set, it's the primary web-search source; DuckDuckGo stays the keyless fallback.")
+                Text("This setting powers JARVIS's web_search tool. Tavily returns current AI-friendly content; without a Tavily key, JARVIS uses the built-in keyless DuckDuckGo search as fallback.")
             }
         }
         .navigationTitle("Web Search")

@@ -171,7 +171,12 @@ final class VoiceCommandService: ObservableObject {
         if AudioSessionManager.shared.isUsingBuiltInMic {
             do {
                 try inputNode.setVoiceProcessingEnabled(true)
-                DiagnosticLogger.shared.log("Audio", "Voice processing enabled (AEC) on iPhone mic")
+                inputNode.voiceProcessingOtherAudioDuckingConfiguration =
+                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+                        enableAdvancedDucking: ObjCBool(true),
+                        duckingLevel: .min
+                    )
+                DiagnosticLogger.shared.log("Audio", "Voice processing enabled (AEC); other-audio ducking=min")
                 AudioSessionManager.shared.enforcePhoneSpeakerRoute()
             } catch {
                 DiagnosticLogger.shared.log("Audio", "Voice processing unavailable: \(error.localizedDescription)")

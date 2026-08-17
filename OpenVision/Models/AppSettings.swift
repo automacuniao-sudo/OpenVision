@@ -154,6 +154,10 @@ struct AppSettings: Codable, Equatable {
     /// Key-value memories the AI can read and manage
     var memories: [String: String] = [:]
 
+    /// One-time migration marker for the Project JARVIS starter profile. This prevents the app
+    /// from recreating memories/instructions the user later edits or deliberately deletes.
+    var jarvisProfileSeedVersion: Int = 0
+
     // MARK: - Advanced Settings
 
     /// Auto-reconnect on connection drop

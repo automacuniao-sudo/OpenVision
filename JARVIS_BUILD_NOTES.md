@@ -1,5 +1,15 @@
 # Projeto JARVIS build notes
 
+## Build 22
+
+- Audio: compared the current path with the clean build-12/13 PCM path; removed the build-21 2.5x hard-limited software gain that caused clipping/"chiado". Gemini PCM is back at unity gain.
+- Audio: kept AVAudioEngine voice processing/AEC and all working barge-in behavior, but configured voice-processing other-audio ducking to minimum so the separate Gemini playback engine is not heavily attenuated.
+- Web search: fixed the architecture mismatch where Settings showed DuckDuckGo/Tavily while the Gemini `web_search` tool ignored that setting and called Google grounding directly. `web_search` now delegates to the existing WebSearchService: Tavily when configured, otherwise keyless DuckDuckGo.
+- History: Gemini output-transcription fragments are accumulated into the complete assistant reply before persistence; normal wake-word user messages are no longer duplicated by the live-turn recorder.
+- Custom Instructions: one-time starter instructions are populated automatically only when the field is empty.
+- Memories: one-time Project JARVIS starter memories are populated without overwriting existing memory values; a migration marker prevents deleted/edited memories from being recreated every launch.
+- App build number is 22.
+
 ## Build 21
 
 - Investigated current Google service health: no broad severe Gemini outage is publicly reported at this time; current official Gemini docs still support Google Search grounding on Gemini 2.5 Flash/Flash-Lite.
