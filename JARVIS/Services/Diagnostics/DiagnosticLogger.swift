@@ -1,4 +1,4 @@
-// OpenVision - DiagnosticLogger.swift
+// JARVIS - DiagnosticLogger.swift
 // Persistent in-app diagnostics for Windows/GitHub Actions/Sideloadly development.
 
 import Foundation
@@ -32,7 +32,7 @@ final class DiagnosticLogger: ObservableObject {
             entries = Array(existing.split(separator: "\n", omittingEmptySubsequences: true).map(String.init).suffix(maxEntries))
         }
 
-        log("App", "Diagnostics initialized — OpenVision \(Config.appVersion) (\(Config.buildNumber))")
+        log("App", "Diagnostics initialized — JARVIS \(Config.appVersion) (\(Config.buildNumber))")
     }
 
     func log(_ category: String, _ message: String) {

@@ -1,43 +1,109 @@
-// OpenVision - WebSearchService.swift
-// Free/current web search for JARVIS.
-//
-// Priority: Tavily when configured; otherwise DuckDuckGo HTML for time-sensitive queries and
-// DuckDuckGo Instant Answer for stable factual lookups. HTML results now preserve title + source URL
-// so Gemini can distinguish sources instead of reasoning from anonymous snippets alone.
+// JARVIS - WebSearchService.swift
+// Current web search with Tavily primary and DuckDuckGo fallback.
 
 import Foundation
 
 enum WebSearchService {
+    struct TavilyTestResult: Sendable {
+        let success: Bool
+        let message: String
+    }
 
     static func search(_ query: String) async -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
-        // 1) Tavily (if configured): best generic provider for fresh/current information.
+        let tavilyConfigured = await MainActor.run {
+            !SettingsManager.shared.settings.tavilyAPIKey
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        }
+
         if let tavily = await tavilySearch(trimmed), !tavily.isEmpty {
+            await diagnostic("Tavily SUCCESS chars=\(tavily.count) query=\(trimmed)")
             return tavily
         }
 
-        let timeSensitive = isTimeSensitiveQuery(trimmed)
-
-        // 2) For current information, prefer real result pages. Instant Answer can surface an old
-        // fact that happens to match the entity name, which is especially dangerous for schedules.
-        if timeSensitive {
-            let html = await htmlResults(trimmed)
-            if !html.isEmpty { return html }
-            return await instantAnswer(trimmed) ?? ""
+        if tavilyConfigured {
+            await diagnostic("Tavily unavailable -> falling back to DuckDuckGo query=\(trimmed)")
         }
 
-        // 3) Stable fact/definition path.
+        let timeSensitive = isTimeSensitiveQuery(trimmed)
+        if timeSensitive {
+            let html = await htmlResults(trimmed)
+            if !html.isEmpty {
+                await diagnostic("DuckDuckGo HTML SUCCESS chars=\(html.count) query=\(trimmed)")
+                return html
+            }
+            if let instant = await instantAnswer(trimmed), !instant.isEmpty {
+                await diagnostic("DuckDuckGo Instant Answer SUCCESS chars=\(instant.count) query=\(trimmed)")
+                return instant
+            }
+            return ""
+        }
+
         if let instant = await instantAnswer(trimmed), !instant.isEmpty {
+            await diagnostic("DuckDuckGo Instant Answer SUCCESS chars=\(instant.count) query=\(trimmed)")
             return instant
         }
 
-        // 4) Generic no-key fallback.
-        return await htmlResults(trimmed)
+        let html = await htmlResults(trimmed)
+        if !html.isEmpty {
+            await diagnostic("DuckDuckGo HTML SUCCESS chars=\(html.count) query=\(trimmed)")
+        }
+        return html
     }
 
     // MARK: - Tavily
+
+    static func testTavily(apiKey: String) async -> TavilyTestResult {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            return TavilyTestResult(success: false, message: "Informe uma chave Tavily primeiro.")
+        }
+        guard let url = URL(string: "https://api.tavily.com/search") else {
+            return TavilyTestResult(success: false, message: "Endpoint Tavily inválido.")
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 12
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "api_key": key,
+            "query": "Tavily connectivity test",
+            "search_depth": "basic",
+            "max_results": 1,
+            "include_answer": false
+        ])
+
+        await diagnostic("Tavily TEST started")
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                await diagnostic("Tavily TEST failed: non-HTTP response")
+                return TavilyTestResult(success: false, message: "Resposta inválida do Tavily.")
+            }
+
+            switch http.statusCode {
+            case 200:
+                await diagnostic("Tavily TEST SUCCESS HTTP=200")
+                return TavilyTestResult(success: true, message: "Tavily funcionando — API respondeu HTTP 200.")
+            case 401, 403:
+                await diagnostic("Tavily TEST FAILED HTTP=\(http.statusCode) invalid key/auth")
+                return TavilyTestResult(success: false, message: "Chave Tavily inválida ou sem autorização.")
+            case 429:
+                await diagnostic("Tavily TEST FAILED HTTP=429 rate limit")
+                return TavilyTestResult(success: false, message: "Tavily respondeu, mas o limite da conta foi atingido.")
+            default:
+                await diagnostic("Tavily TEST FAILED HTTP=\(http.statusCode)")
+                return TavilyTestResult(success: false, message: "Tavily retornou HTTP \(http.statusCode).")
+            }
+        } catch {
+            await diagnostic("Tavily TEST FAILED error=\(error.localizedDescription)")
+            return TavilyTestResult(success: false, message: "Falha de conexão: \(error.localizedDescription)")
+        }
+    }
 
     private static func tavilySearch(_ query: String) async -> String? {
         let key = await MainActor.run {
@@ -58,11 +124,19 @@ enum WebSearchService {
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
+        await diagnostic("Tavily request started query=\(query)")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                NSLog("[OV] Tavily unavailable (HTTP %d)", (response as? HTTPURLResponse)?.statusCode ?? 0)
+            guard let http = response as? HTTPURLResponse else {
+                await diagnostic("Tavily FAILED non-HTTP response")
+                return nil
+            }
+            guard http.statusCode == 200 else {
+                await diagnostic("Tavily FAILED HTTP=\(http.statusCode)")
+                return nil
+            }
+            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                await diagnostic("Tavily FAILED invalid JSON")
                 return nil
             }
 
@@ -85,12 +159,13 @@ enum WebSearchService {
             }
 
             let combined = String(parts.joined(separator: "\n").prefix(3200))
-            if !combined.isEmpty {
-                NSLog("[OV] Tavily hit: %d chars for \"%@\"", combined.count, query)
+            guard !combined.isEmpty else {
+                await diagnostic("Tavily FAILED HTTP=200 but no usable content")
+                return nil
             }
-            return combined.isEmpty ? nil : combined
+            return combined
         } catch {
-            NSLog("[OV] Tavily error: %@", "\(error)")
+            await diagnostic("Tavily FAILED error=\(error.localizedDescription)")
             return nil
         }
     }
@@ -158,15 +233,11 @@ enum WebSearchService {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200,
                   let html = String(data: data, encoding: .utf8) else {
-                NSLog("[OV] web search (html): unavailable (HTTP %d)", (response as? HTTPURLResponse)?.statusCode ?? 0)
                 return ""
             }
 
             let results = parseResults(from: html, limit: 5)
-            if results.isEmpty {
-                NSLog("[OV] web search (html): no results parsed for \"%@\"", query)
-                return ""
-            }
+            if results.isEmpty { return "" }
 
             return results.enumerated().map { index, result in
                 var line = "\(index + 1). \(result.title): \(result.snippet)"
@@ -176,7 +247,6 @@ enum WebSearchService {
                 return line
             }.joined(separator: "\n")
         } catch {
-            NSLog("[OV] web search (html) failed: %@", "\(error)")
             return ""
         }
     }
@@ -186,14 +256,8 @@ enum WebSearchService {
         let snippetPattern = #"class=\"result__snippet\"[^>]*>(.*?)</a>"#
         let fullRange = NSRange(html.startIndex..<html.endIndex, in: html)
 
-        let titleRegex = try? NSRegularExpression(
-            pattern: titlePattern,
-            options: [.dotMatchesLineSeparators, .caseInsensitive]
-        )
-        let snippetRegex = try? NSRegularExpression(
-            pattern: snippetPattern,
-            options: [.dotMatchesLineSeparators, .caseInsensitive]
-        )
+        let titleRegex = try? NSRegularExpression(pattern: titlePattern, options: [.dotMatchesLineSeparators, .caseInsensitive])
+        let snippetRegex = try? NSRegularExpression(pattern: snippetPattern, options: [.dotMatchesLineSeparators, .caseInsensitive])
 
         let titleMatches = titleRegex?.matches(in: html, range: fullRange) ?? []
         let snippetMatches = snippetRegex?.matches(in: html, range: fullRange) ?? []
@@ -273,5 +337,11 @@ enum WebSearchService {
             "placar", "resultado", "jogo", "partida", "noticia", "noticias", "preco", "cotacao",
             "weather", "tempo", "today", "yesterday", "tomorrow", "latest", "next", "score"
         ].contains { normalized.contains($0) }
+    }
+
+    private static func diagnostic(_ message: String) async {
+        await MainActor.run {
+            DiagnosticLogger.shared.log("WebSearch", message)
+        }
     }
 }

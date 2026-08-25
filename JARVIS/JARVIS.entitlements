@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <!-- Raise the jetsam memory ceiling so the on-device Gemma 4 VLM (~3.6 GB) plus the
-         vision encoder can run without being killed under memory pressure. -->
+         visual encoder can run without being killed under memory pressure. -->
     <key>com.apple.developer.kernel.increased-memory-limit</key>
     <true/>
 </dict>

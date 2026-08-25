@@ -1,11 +1,11 @@
-// OpenVision - OpenVisionApp.swift
+// JARVIS - JARVISApp.swift
 // App entry point with URL scheme handling for Meta AI registration
 
 import SwiftUI
 import MWDATCore
 
 @main
-struct OpenVisionApp: App {
+struct JARVISApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     // MARK: - State Objects
@@ -35,11 +35,11 @@ struct OpenVisionApp: App {
         // Initialize Meta Wearables SDK
         do {
             try Wearables.configure()
-            print("[OpenVisionApp] Wearables SDK configured")
+            print("[JARVISApp] Wearables SDK configured")
         } catch {
-            print("[OpenVisionApp] Failed to configure Wearables SDK: \(error)")
+            print("[JARVISApp] Failed to configure Wearables SDK: \(error)")
         }
-        print("[OpenVisionApp] Initialized")
+        print("[JARVISApp] Initialized")
     }
 
     // MARK: - Body
@@ -100,14 +100,14 @@ struct OpenVisionApp: App {
 
     /// Handle URL callback from Meta AI app for glasses registration
     private func handleURL(_ url: URL) {
-        print("[OpenVisionApp] Received URL: \(url)")
+        print("[JARVISApp] Received URL: \(url)")
 
         Task {
             do {
                 _ = try await Wearables.shared.handleUrl(url)
-                print("[OpenVisionApp] URL handled successfully")
+                print("[JARVISApp] URL handled successfully")
             } catch {
-                print("[OpenVisionApp] Error handling URL: \(error)")
+                print("[JARVISApp] Error handling URL: \(error)")
             }
         }
     }

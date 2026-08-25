@@ -1,20 +1,15 @@
-// OpenVision - SettingsView.swift
+// JARVIS - SettingsView.swift
 // Main settings menu with navigation to configuration panels
 
 import SwiftUI
 
 struct SettingsView: View {
-    // MARK: - Environment
-
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var glassesManager: GlassesManager
-
-    // MARK: - Body
 
     var body: some View {
         NavigationStack {
             Form {
-                // AI Backend Section
                 Section {
                     NavigationLink {
                         AIBackendSettingsView()
@@ -43,7 +38,6 @@ struct SettingsView: View {
                         }
                     }
 
-                    // Only show for Gemini Live (OpenClaw has its own system prompt & memories)
                     if settingsManager.settings.aiBackend == .geminiLive {
                         NavigationLink {
                             AdditionalInstructionsView()
@@ -66,7 +60,6 @@ struct SettingsView: View {
                     Text("AI")
                 }
 
-                // Hardware Section
                 Section {
                     NavigationLink {
                         GlassesSettingsView()
@@ -87,7 +80,6 @@ struct SettingsView: View {
                     Text("Hardware")
                 }
 
-                // Voice Section
                 Section {
                     NavigationLink {
                         VoiceSettingsView()
@@ -108,7 +100,6 @@ struct SettingsView: View {
                     Text("Voice")
                 }
 
-                // Advanced Section
                 Section {
                     NavigationLink {
                         DocumentsSettingsView()
@@ -133,7 +124,6 @@ struct SettingsView: View {
                     Text("Advanced")
                 }
 
-                // About Section
                 Section {
                     HStack {
                         Label("Version", systemImage: "info.circle")
@@ -142,20 +132,20 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
 
-                    Link(destination: URL(string: "https://github.com/rayl15/OpenVision")!) {
-                        Label("GitHub Repository", systemImage: "link")
+                    Link(destination: URL(string: "https://github.com/automacuniao-sudo/OpenVision/tree/jarvis-dev")!) {
+                        Label("JARVIS Repository", systemImage: "link")
                     }
 
                     Link(destination: URL(string: "https://github.com/openclaw/openclaw")!) {
                         Label("Get OpenClaw", systemImage: "arrow.up.right.square")
                     }
                 } header: {
-                    Text("About")
+                    Text("About JARVIS")
                 } footer: {
-                    Text("OpenVision is open source under the MIT license.")
+                    Text("JARVIS is the customized assistant project developed on this branch.")
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle("JARVIS Settings")
         }
     }
 }

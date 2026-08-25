@@ -1,12 +1,14 @@
-// OpenVision - WebSearchSettingsView.swift
-// Configure the web-search provider. Tavily (free tier) returns real live content for the
-// assistant to summarize; DuckDuckGo is the keyless fallback.
+// JARVIS - WebSearchSettingsView.swift
+// Configure and validate Tavily, with DuckDuckGo as automatic fallback.
 
 import SwiftUI
 
 struct WebSearchSettingsView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @State private var apiKey: String = ""
+    @State private var isTesting = false
+    @State private var testMessage: String?
+    @State private var testSucceeded = false
 
     var body: some View {
         Form {
@@ -22,12 +24,40 @@ struct WebSearchSettingsView: View {
                 Text("Tavily (recommended)")
             } footer: {
                 if apiKey.trimmingCharacters(in: .whitespaces).isEmpty {
-                    Label("No key — web search falls back to DuckDuckGo, which is weak for live news, prices, and scores.", systemImage: "info.circle")
+                    Label("Sem chave — JARVIS usa DuckDuckGo como fallback.", systemImage: "info.circle")
                         .font(.caption).foregroundColor(.secondary)
                 } else {
-                    Label("Tavily configured — live web content enabled.", systemImage: "checkmark.circle.fill")
-                        .font(.caption).foregroundColor(.green)
+                    Label("Chave salva. Use Test Tavily para confirmar que a API está funcionando.", systemImage: "key.fill")
+                        .font(.caption).foregroundColor(.secondary)
                 }
+            }
+
+            Section {
+                Button {
+                    testTavily()
+                } label: {
+                    HStack {
+                        Label("Test Tavily", systemImage: "checkmark.shield")
+                        Spacer()
+                        if isTesting {
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(isTesting || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if let testMessage {
+                    Label(
+                        testMessage,
+                        systemImage: testSucceeded ? "checkmark.circle.fill" : "xmark.circle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundColor(testSucceeded ? .green : .red)
+                }
+            } header: {
+                Text("Connection Test")
+            } footer: {
+                Text("O teste faz uma chamada real ao Tavily. Nenhuma chave é gravada nos Diagnostics.")
             }
 
             Section {
@@ -41,13 +71,16 @@ struct WebSearchSettingsView: View {
             } header: {
                 Text("Help")
             } footer: {
-                Text("This setting powers JARVIS's web_search tool. Tavily returns current AI-friendly content; without a Tavily key, JARVIS uses the built-in keyless DuckDuckGo search as fallback.")
+                Text("Tavily é a fonte principal para pesquisas atuais. Se ele falhar, JARVIS cai automaticamente para DuckDuckGo e registra qual provedor respondeu nos Diagnostics.")
             }
         }
         .navigationTitle("Web Search")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { apiKey = settingsManager.settings.tavilyAPIKey }
         .onDisappear { save() }
+        .onChange(of: apiKey) { _ in
+            testMessage = nil
+        }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save") { save() }
@@ -58,6 +91,19 @@ struct WebSearchSettingsView: View {
     private func save() {
         settingsManager.settings.tavilyAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         settingsManager.saveNow()
+    }
+
+    private func testTavily() {
+        save()
+        isTesting = true
+        testMessage = nil
+
+        Task { @MainActor in
+            let result = await WebSearchService.testTavily(apiKey: apiKey)
+            testSucceeded = result.success
+            testMessage = result.message
+            isTesting = false
+        }
     }
 }
 

@@ -6,7 +6,7 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>$(DEVELOPMENT_LANGUAGE)</string>
     <key>CFBundleDisplayName</key>
-    <string>OpenVision</string>
+    <string>JARVIS</string>
     <key>CFBundleExecutable</key>
     <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleIdentifier</key>
@@ -92,48 +92,39 @@
     </array>
 
     <!-- Privacy - Usage Descriptions -->
-
-    <!-- Microphone for voice input -->
     <key>NSMicrophoneUsageDescription</key>
-    <string>OpenVision needs microphone access to hear your voice commands and have conversations with the AI assistant.</string>
+    <string>JARVIS needs microphone access to hear your voice commands and have conversations with the AI assistant.</string>
 
-    <!-- Camera for photo capture -->
     <key>NSCameraUsageDescription</key>
-    <string>OpenVision uses the camera to capture photos that the AI can analyze and describe.</string>
+    <string>JARVIS uses the camera to capture photos that the AI can analyze and describe.</string>
 
-    <!-- Speech recognition for wake word detection -->
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>OpenVision uses speech recognition to detect your wake word ("Ok Vision") and transcribe your voice commands.</string>
+    <string>JARVIS uses speech recognition to detect your wake word ("Ok Jarvis") and transcribe your voice commands.</string>
 
-    <!-- Bluetooth for glasses connection -->
     <key>NSBluetoothAlwaysUsageDescription</key>
-    <string>OpenVision connects to your Meta Ray-Ban glasses via Bluetooth to access the camera and microphone.</string>
+    <string>JARVIS connects to your Meta Ray-Ban glasses via Bluetooth to access the camera and microphone.</string>
 
     <key>NSBluetoothPeripheralUsageDescription</key>
-    <string>OpenVision connects to your Meta Ray-Ban glasses via Bluetooth.</string>
+    <string>JARVIS connects to your Meta Ray-Ban glasses via Bluetooth.</string>
 
-    <!-- Photo Library for saving captured images -->
     <key>NSPhotoLibraryAddUsageDescription</key>
-    <string>OpenVision can save captured photos to your photo library.</string>
+    <string>JARVIS can save captured photos to your photo library.</string>
 
     <key>NSPhotoLibraryUsageDescription</key>
-    <string>OpenVision can access your photo library to share images with the AI.</string>
+    <string>JARVIS can access your photo library to share images with the AI.</string>
 
-    <!-- Location (if needed for context) -->
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>OpenVision can use your location to provide location-aware responses.</string>
+    <string>JARVIS can use your location to provide location-aware responses.</string>
 
-    <!-- Productivity tools -->
     <key>NSCalendarsUsageDescription</key>
-    <string>OpenVision reads and adds calendar events when you ask by voice.</string>
+    <string>JARVIS reads and adds calendar events when you ask by voice.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
-    <string>OpenVision reads and adds calendar events when you ask by voice.</string>
+    <string>JARVIS reads and adds calendar events when you ask by voice.</string>
     <key>NSRemindersUsageDescription</key>
-    <string>OpenVision creates reminders when you ask by voice.</string>
+    <string>JARVIS creates reminders when you ask by voice.</string>
     <key>NSRemindersFullAccessUsageDescription</key>
-    <string>OpenVision creates reminders when you ask by voice.</string>
+    <string>JARVIS creates reminders when you ask by voice.</string>
 
-    <!-- App Transport Security (allow WebSocket connections) -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
@@ -142,7 +133,6 @@
         <true/>
     </dict>
 
-    <!-- Wearables Device Access Toolkit configuration -->
     <key>MWDAT</key>
     <dict>
         <key>MetaAppID</key>
@@ -155,11 +145,9 @@
         <string>$(DEVELOPMENT_TEAM)</string>
     </dict>
 
-    <!-- Appearance -->
     <key>UIUserInterfaceStyle</key>
     <string>Dark</string>
 
-    <!-- Status Bar -->
     <key>UIStatusBarStyle</key>
     <string>UIStatusBarStyleLightContent</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
