@@ -1,7 +1,8 @@
 // OpenVision - ConversationListView.swift
-// List of past conversations with search and delete
+// List of past conversations with search, delete, copy, and export
 
 import SwiftUI
+import UIKit
 
 struct ConversationListView: View {
     // MARK: - Environment
@@ -144,6 +145,7 @@ struct ConversationRow: View {
 struct ConversationDetailView: View {
     let conversation: Conversation
     @State private var resumed = false
+    @State private var copied = false
 
     var body: some View {
         ScrollView {
@@ -157,11 +159,30 @@ struct ConversationDetailView: View {
         .navigationTitle(conversation.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        copyConversation()
+                    } label: {
+                        Label(copied ? "Conversa copiada" : "Copiar conversa", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+
+                    ShareLink(
+                        item: exportText,
+                        subject: Text("Conversa JARVIS"),
+                        message: Text(conversation.title)
+                    ) {
+                        Label("Exportar conversa", systemImage: "square.and.arrow.up")
+                    }
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("Copiar ou exportar conversa")
+
                 Button {
                     // Continue this conversation: make it current (new messages append to it)
                     // and reload its recent exchanges as the model's live context, so the next
-                    // "Ok Vision" follow-up picks up where it left off.
+                    // "Ok Jarvis" follow-up picks up where it left off.
                     ConversationManager.shared.resumeConversation(conversation)
                     ConversationContext.shared.seed(from: conversation)
                     resumed = true
@@ -171,6 +192,45 @@ struct ConversationDetailView: View {
                 .disabled(resumed)
             }
         }
+    }
+
+    private func copyConversation() {
+        UIPasteboard.general.string = exportText
+        copied = true
+        DiagnosticLogger.shared.log(
+            "History",
+            "Copied conversation messages=\(conversation.messages.count)"
+        )
+    }
+
+    /// Plain-text export designed to be useful in WhatsApp, Notes, email, bug reports, or when
+    /// pasting a complete JARVIS exchange back into ChatGPT for debugging.
+    private var exportText: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "pt_BR")
+        formatter.timeZone = .autoupdatingCurrent
+        formatter.dateFormat = "dd/MM/yyyy HH:mm:ss"
+
+        let timeZone = TimeZone.autoupdatingCurrent.identifier
+        let created = formatter.string(from: conversation.createdAt)
+        let header = "JARVIS — \(conversation.title)\nCriada em: \(created)\nFuso do iPhone: \(timeZone)"
+
+        let body = conversation.messages.map { message in
+            let role: String
+            switch message.role {
+            case .user:
+                role = "Você"
+            case .assistant:
+                role = "JARVIS"
+            case .system:
+                role = "Sistema"
+            case .tool:
+                role = message.toolName.map { "Ferramenta (\($0))" } ?? "Ferramenta"
+            }
+            return "[\(formatter.string(from: message.timestamp))] \(role): \(message.content)"
+        }.joined(separator: "\n\n")
+
+        return body.isEmpty ? header : "\(header)\n\n\(body)"
     }
 }
 
