@@ -86,8 +86,13 @@ enum Constants {
         /// Command capture timeout (seconds)
         static let commandTimeout: TimeInterval = 10.0
 
-        /// Legacy/fallback silence timeout. Normal voice turns use TurnEndpointing instead.
+        /// Fallback only when acoustic VAD is unavailable. This measures lack of new transcript
+        /// updates, not real silence, so it stays conservative to avoid cutting speech.
         static let silenceTimeout: TimeInterval = 4.0
+
+        /// Small grace after Silero reports speechEnd. The recognizer's final text partial often
+        /// trails the audio event slightly; speech resuming inside this window cancels the commit.
+        static let vadCommitGrace: TimeInterval = 0.35
 
         /// Default conversation timeout (seconds)
         static let conversationTimeout: TimeInterval = 30.0
