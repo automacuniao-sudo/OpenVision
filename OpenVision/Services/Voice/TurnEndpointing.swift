@@ -18,6 +18,13 @@ enum TurnEndpointing {
 
     static let minimumWordsForFastCommit = 2
 
+    /// One-word replies that are semantically complete on their own. Without this set, follow-ups
+    /// such as "sim" wait the full 3-second grace period even though there is nothing to complete.
+    private static let completeSingleWords: Set<String> = [
+        "sim", "não", "nao", "ok", "okay", "certo", "beleza", "continue", "continua",
+        "pare", "parar", "cancele", "cancelar", "confirme", "confirmo"
+    ]
+
     /// Portuguese words which strongly suggest the sentence is still waiting for a complement.
     /// Deliberately conservative: a false positive only adds latency, but a false negative can cut
     /// the user's sentence in half.
@@ -43,7 +50,7 @@ enum TurnEndpointing {
 
         // common command verbs which usually need an object
         "fale", "fala", "explique", "explica", "pesquise", "pesquisa", "procure", "procura", "diga",
-        "mostre", "mostra", "crie", "cria", "adicione", "adicione", "mande", "envie", "abra", "coloque"
+        "mostre", "mostra", "crie", "cria", "adicione", "mande", "envie", "abra", "coloque"
     ]
 
     private static let fillers: Set<String> = [
@@ -64,7 +71,13 @@ enum TurnEndpointing {
         }
 
         let words = tokenize(trimmed)
-        guard words.count >= minimumWordsForFastCommit, let last = words.last else { return false }
+        guard let last = words.last else { return false }
+
+        if words.count == 1 {
+            return completeSingleWords.contains(last)
+        }
+
+        guard words.count >= minimumWordsForFastCommit else { return false }
         if fillers.contains(last) { return false }
         if danglingWords.contains(last) { return false }
         return true

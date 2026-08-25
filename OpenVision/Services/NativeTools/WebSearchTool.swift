@@ -1,22 +1,21 @@
 // OpenVision - WebSearchTool.swift
 // Current-information search bridge for JARVIS.
 //
-// IMPORTANT: this tool intentionally delegates to WebSearchService so Settings > Web Search is
-// the source of truth. Tavily is used when the user configured a key; otherwise the existing
-// keyless DuckDuckGo pipeline is used. Gemini Live only receives the returned findings.
+// Sports score/schedule questions first use structured football data when possible. Generic web
+// search remains the fallback and Settings > Web Search is still the source of truth for Tavily.
 
 import Foundation
 
 struct WebSearchTool: NativeTool {
     let name = "web_search"
-    let description = "Search the current internet for genuinely time-sensitive information using the provider configured in Settings > Web Search. Use for explicit pesquisar/buscar requests and facts that can change, such as sports scores/schedules, news, weather, prices, releases, current office-holders, or recent events. Do NOT use this tool for stable general-knowledge facts such as country capitals unless the user explicitly asks to search. For sports questions like último jogo/próximo jogo, only answer when the findings clearly support the date, opponent, and score/schedule; if results are ambiguous or conflicting, search again with the absolute date instead of guessing. Relative dates are resolved from the iPhone's local calendar before searching."
+    let description = "Search current information. Use for explicit pesquisar/buscar requests and genuinely time-sensitive facts such as sports results/schedules, news, weather, prices, releases, current office-holders, or recent events. Do NOT use for stable general knowledge, biographies/history, country capitals, or a generic 'fale sobre X' unless the user explicitly asks for current/latest/recent information or asks to search. For football score/schedule/scorer questions, structured sports data is tried before generic snippets. If the user says 'pesquise no Google', do not pretend Google is integrated: use the configured provider and state the real provider if relevant. Relative dates are resolved deterministically from the iPhone clock."
 
     let parametersSchema: [String: Any] = [
         "type": "object",
         "properties": [
             "query": [
                 "type": "string",
-                "description": "A concise web-search query. For time-sensitive questions include the team/person/topic; JARVIS will resolve hoje/ontem/amanhã and last/next relative to the iPhone's current local date."
+                "description": "A concise search query. For current sports include the team and intent (placar, gols, último/próximo jogo). Do not invent a calendar date for hoje/ontem/amanhã; the iPhone resolves it."
             ]
         ],
         "required": ["query"]
@@ -29,6 +28,24 @@ struct WebSearchTool: NativeTool {
 
         let dateContext = Self.localDateContext()
         let searchQuery = Self.resolveTemporalTerms(in: query, context: dateContext)
+
+        // Structured football data is much safer than search snippets for exact scores, opponents,
+        // schedules and goal scorers. It is keyless and falls through silently if ESPN does not
+        // cover the requested competition/event.
+        if let structuredSports = await SportsDataService.lookup(searchQuery) {
+            await MainActor.run {
+                DiagnosticLogger.shared.log(
+                    "WebSearch",
+                    "Structured sports hit provider=ESPN query=\(searchQuery)"
+                )
+            }
+            return Self.wrapResult(
+                structuredSports,
+                query: searchQuery,
+                provider: "ESPN estruturado",
+                context: dateContext
+            )
+        }
 
         let provider = await MainActor.run {
             SettingsManager.shared.settings.tavilyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -56,23 +73,32 @@ struct WebSearchTool: NativeTool {
             DiagnosticLogger.shared.log("WebSearch", "Search completed provider=\(provider) chars=\(result.count)")
         }
 
-        // Give Gemini an explicit, deterministic calendar reference with every web result. This is
-        // intentionally generated on-device instead of asking the model to infer "ontem" from an
-        // ISO timestamp. It prevents date-rollover mistakes near midnight and makes sports checks
-        // auditable in Diagnostics.
-        return """
-        CONTEXTO TEMPORAL DO IPHONE — fonte de verdade para datas relativas:
-        hoje = \(dateContext.todayDisplay) (\(dateContext.todayISO))
-        ontem = \(dateContext.yesterdayDisplay) (\(dateContext.yesterdayISO))
-        amanhã = \(dateContext.tomorrowDisplay) (\(dateContext.tomorrowISO))
-        fuso = \(dateContext.timeZoneIdentifier)
-        consulta executada = \(searchQuery)
-        provedor = \(provider)
+        return Self.wrapResult(result, query: searchQuery, provider: provider, context: dateContext)
+    }
 
-        RESULTADOS DA WEB:
+    private static func wrapResult(
+        _ result: String,
+        query: String,
+        provider: String,
+        context: LocalDateContext
+    ) -> String {
+        """
+        CONTEXTO TEMPORAL DO IPHONE — fonte de verdade para datas relativas:
+        hoje = \(context.todayDisplay) (\(context.todayISO))
+        ontem = \(context.yesterdayDisplay) (\(context.yesterdayISO))
+        amanhã = \(context.tomorrowDisplay) (\(context.tomorrowISO))
+        fuso = \(context.timeZoneIdentifier)
+        consulta executada = \(query)
+        provedor real = \(provider)
+
+        RESULTADOS:
         \(result)
 
-        Ao responder, não reinterprete hoje/ontem/amanhã. Para placar ou agenda esportiva, só afirme um resultado quando os achados acima deixarem clara a data e a partida; se estiver ambíguo, faça outra busca mais específica em vez de completar pela memória.
+        REGRAS DE RESPOSTA:
+        - Não reinterprete hoje/ontem/amanhã e não substitua a data local por uma data da memória do modelo.
+        - Nunca diga que pesquisou no Google quando o campo 'provedor real' acima indicar outro serviço.
+        - Em placar, agenda ou autores de gols, use somente dados que estejam claramente sustentados pelos resultados. Se adversário/data/placar estiverem ambíguos, faça outra busca mais específica em vez de adivinhar.
+        - Não misture snippets antigos com memória do modelo para preencher campos ausentes.
         """
     }
 
@@ -121,18 +147,39 @@ struct WebSearchTool: NativeTool {
     }
 
     private static func resolveTemporalTerms(in query: String, context: LocalDateContext) -> String {
-        var resolved = query
+        let normalized = query
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
 
-        // Replace explicit relative-day words with both the natural word and the exact calendar
-        // date so search providers cannot silently assume a server-side date or time zone.
+        let hasYesterday = normalized.contains("ontem") || normalized.contains("yesterday")
+        let hasToday = normalized.contains("hoje") || normalized.contains("today")
+        let hasTomorrow = normalized.contains("amanha") || normalized.contains("tomorrow")
+
+        // Gemini sometimes supplied a conflicting explicit date together with a relative word,
+        // e.g. "ontem 24/08/2026" while the iPhone correctly said yesterday was 23/08. Strip any
+        // model-generated dates in that case and insert one authoritative date only.
+        var resolved = (hasYesterday || hasToday || hasTomorrow)
+            ? removingExplicitDates(from: query)
+            : query
+
         resolved = resolved.replacingOccurrences(
             of: "ontem",
             with: "ontem \(context.yesterdayDisplay)",
             options: [.caseInsensitive]
         )
         resolved = resolved.replacingOccurrences(
+            of: "yesterday",
+            with: "yesterday \(context.yesterdayISO)",
+            options: [.caseInsensitive]
+        )
+        resolved = resolved.replacingOccurrences(
             of: "hoje",
             with: "hoje \(context.todayDisplay)",
+            options: [.caseInsensitive]
+        )
+        resolved = resolved.replacingOccurrences(
+            of: "today",
+            with: "today \(context.todayISO)",
             options: [.caseInsensitive]
         )
         resolved = resolved.replacingOccurrences(
@@ -145,27 +192,50 @@ struct WebSearchTool: NativeTool {
             with: "amanha \(context.tomorrowDisplay)",
             options: [.caseInsensitive]
         )
+        resolved = resolved.replacingOccurrences(
+            of: "tomorrow",
+            with: "tomorrow \(context.tomorrowISO)",
+            options: [.caseInsensitive]
+        )
 
-        let normalized = query
+        let normalizedOriginal = query
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
             .lowercased()
 
         let asksLast = [
             "ultimo jogo", "ultima partida", "jogo mais recente", "partida mais recente",
             "last game", "last match", "latest game", "latest match"
-        ].contains { normalized.contains($0) }
+        ].contains { normalizedOriginal.contains($0) }
 
         let asksNext = [
             "proximo jogo", "proxima partida", "next game", "next match"
-        ].contains { normalized.contains($0) }
+        ].contains { normalizedOriginal.contains($0) }
 
         if asksLast {
             resolved += " — referência local: antes de \(context.todayDisplay); identificar a partida concluída mais recente com data, adversário e placar"
         } else if asksNext {
-            resolved += " — referência local: a partir de \(context.todayDisplay); identificar a próxima partida futura com data e adversário"
+            resolved += " — referência local: a partir de \(context.todayDisplay); identificar a próxima partida futura com data, adversário e competição"
         }
 
         return resolved
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func removingExplicitDates(from query: String) -> String {
+        var cleaned = query
+        let patterns = [
+            #"\b\d{1,2}/\d{1,2}/\d{4}\b"#,
+            #"\b\d{4}-\d{1,2}-\d{1,2}\b"#
+        ]
+        for pattern in patterns {
+            cleaned = cleaned.replacingOccurrences(
+                of: pattern,
+                with: "",
+                options: [.regularExpression]
+            )
+        }
+        return cleaned
     }
 }
 

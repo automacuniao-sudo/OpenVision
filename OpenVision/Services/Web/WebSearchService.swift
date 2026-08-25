@@ -1,38 +1,48 @@
 // OpenVision - WebSearchService.swift
-// Free web search via DuckDuckGo — no API key.
+// Free/current web search for JARVIS.
 //
-// Two-stage: (1) the Instant Answer API for clean facts/definitions/calculations, then
-// (2) the real search endpoint (html.duckduckgo.com) parsed for result snippets, which DOES
-// carry live/current results (news, scores, etc.). The caller (Gemma) summarizes the snippets.
-//
-// Note: stage 2 parses HTML from an unofficial endpoint, so it can rate-limit or change format.
-// It's the same approach most "free DuckDuckGo" integrations use.
+// Priority: Tavily when configured; otherwise DuckDuckGo HTML for time-sensitive queries and
+// DuckDuckGo Instant Answer for stable factual lookups. HTML results now preserve title + source URL
+// so Gemini can distinguish sources instead of reasoning from anonymous snippets alone.
 
 import Foundation
 
 enum WebSearchService {
 
-    /// Returns a text blob of search findings for `query`, or "" if nothing was found.
     static func search(_ query: String) async -> String {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return "" }
 
-        // 1) Tavily (if configured) — real live content, built for LLMs. Best for news/prices/scores.
+        // 1) Tavily (if configured): best generic provider for fresh/current information.
         if let tavily = await tavilySearch(trimmed), !tavily.isEmpty {
             return tavily
         }
-        // 2) DuckDuckGo Instant Answer — clean facts / definitions / math (no key).
+
+        let timeSensitive = isTimeSensitiveQuery(trimmed)
+
+        // 2) For current information, prefer real result pages. Instant Answer can surface an old
+        // fact that happens to match the entity name, which is especially dangerous for schedules.
+        if timeSensitive {
+            let html = await htmlResults(trimmed)
+            if !html.isEmpty { return html }
+            return await instantAnswer(trimmed) ?? ""
+        }
+
+        // 3) Stable fact/definition path.
         if let instant = await instantAnswer(trimmed), !instant.isEmpty {
             return instant
         }
-        // 3) DuckDuckGo HTML result snippets (no key; weak for live data).
+
+        // 4) Generic no-key fallback.
         return await htmlResults(trimmed)
     }
 
-    // MARK: - Tavily (primary when a key is set)
+    // MARK: - Tavily
 
     private static func tavilySearch(_ query: String) async -> String? {
-        let key = await MainActor.run { SettingsManager.shared.settings.tavilyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let key = await MainActor.run {
+            SettingsManager.shared.settings.tavilyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         guard !key.isEmpty, let url = URL(string: "https://api.tavily.com/search") else { return nil }
 
         var request = URLRequest(url: url)
@@ -55,27 +65,28 @@ enum WebSearchService {
                 NSLog("[OV] Tavily unavailable (HTTP %d)", (response as? HTTPURLResponse)?.statusCode ?? 0)
                 return nil
             }
+
             var parts: [String] = []
-            // Tavily's synthesized answer is the cleanest thing to hand the model.
             if let answer = json["answer"] as? String, !answer.isEmpty {
-                parts.append(String(answer.prefix(800)))
+                parts.append("Resposta sintetizada Tavily: \(String(answer.prefix(700)))")
             }
-            // Plus a few supporting result snippets — each CAPPED. News queries return multi-KB
-            // content fields; an uncapped payload hit 11 KB and overflowed Apple's 4096-token
-            // context, so the turn errored and the fallback answered WITHOUT the search results
-            // (heard as "it answered from memory"). The reply is spoken in 2-3 sentences; a few
-            // hundred chars per result is plenty for every backend.
+
             if let results = json["results"] as? [[String: Any]] {
-                for r in results.prefix(4) {
-                    guard let content = (r["content"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty else { continue }
-                    let title = (r["title"] as? String) ?? ""
+                for (index, result) in results.prefix(4).enumerated() {
+                    guard let content = (result["content"] as? String)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty else { continue }
+                    let title = (result["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Resultado"
+                    let sourceURL = (result["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                     let snippet = String(content.prefix(350))
-                    parts.append(title.isEmpty ? snippet : "\(title): \(snippet)")
+                    var line = "\(index + 1). \(title): \(snippet)"
+                    if !sourceURL.isEmpty { line += "\nFonte: \(sourceURL)" }
+                    parts.append(line)
                 }
             }
-            let combined = String(parts.joined(separator: "\n").prefix(2600))
+
+            let combined = String(parts.joined(separator: "\n").prefix(3200))
             if !combined.isEmpty {
-                NSLog("[OV] Tavily hit: %d chars (%d results) for \"%@\"", combined.count, (json["results"] as? [[String: Any]])?.count ?? 0, query)
+                NSLog("[OV] Tavily hit: %d chars for \"%@\"", combined.count, query)
             }
             return combined.isEmpty ? nil : combined
         } catch {
@@ -84,7 +95,7 @@ enum WebSearchService {
         }
     }
 
-    // MARK: - Stage 1: Instant Answer API
+    // MARK: - DuckDuckGo Instant Answer
 
     private static func instantAnswer(_ query: String) async -> String? {
         guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -101,11 +112,20 @@ enum WebSearchService {
             if let answer = json["Answer"] as? String, !answer.isEmpty { return answer }
             if let abstract = json["AbstractText"] as? String, !abstract.isEmpty {
                 let source = json["AbstractSource"] as? String ?? ""
-                return source.isEmpty ? abstract : "\(abstract) (via \(source))"
+                let sourceURL = json["AbstractURL"] as? String ?? ""
+                var value = source.isEmpty ? abstract : "\(abstract) (via \(source))"
+                if !sourceURL.isEmpty { value += "\nFonte: \(sourceURL)" }
+                return value
             }
             if let topics = json["RelatedTopics"] as? [[String: Any]] {
-                let summaries = topics.prefix(3).compactMap { $0["Text"] as? String }.filter { !$0.isEmpty }
-                if !summaries.isEmpty { return summaries.joined(separator: ". ") }
+                let summaries = topics.prefix(3).compactMap { topic -> String? in
+                    guard let text = topic["Text"] as? String, !text.isEmpty else { return nil }
+                    if let url = topic["FirstURL"] as? String, !url.isEmpty {
+                        return "\(text)\nFonte: \(url)"
+                    }
+                    return text
+                }
+                if !summaries.isEmpty { return summaries.joined(separator: "\n") }
             }
             return nil
         } catch {
@@ -113,7 +133,13 @@ enum WebSearchService {
         }
     }
 
-    // MARK: - Stage 2: real search results (HTML)
+    // MARK: - DuckDuckGo HTML search
+
+    private struct HTMLResult {
+        let title: String
+        let snippet: String
+        let url: String?
+    }
 
     private static func htmlResults(_ query: String) async -> String {
         guard let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
@@ -122,8 +148,10 @@ enum WebSearchService {
         }
         var request = URLRequest(url: url)
         request.timeoutInterval = 10
-        // A browser User-Agent is required — the endpoint returns empty/blocked without one.
-        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+            forHTTPHeaderField: "User-Agent"
+        )
         request.setValue("text/html", forHTTPHeaderField: "Accept")
 
         do {
@@ -133,42 +161,117 @@ enum WebSearchService {
                 NSLog("[OV] web search (html): unavailable (HTTP %d)", (response as? HTTPURLResponse)?.statusCode ?? 0)
                 return ""
             }
-            let snippets = parseSnippets(from: html, limit: 5)
-            if snippets.isEmpty {
-                NSLog("[OV] web search (html): no snippets parsed for \"%@\"", query)
+
+            let results = parseResults(from: html, limit: 5)
+            if results.isEmpty {
+                NSLog("[OV] web search (html): no results parsed for \"%@\"", query)
                 return ""
             }
-            return snippets.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+
+            return results.enumerated().map { index, result in
+                var line = "\(index + 1). \(result.title): \(result.snippet)"
+                if let sourceURL = result.url, !sourceURL.isEmpty {
+                    line += "\nFonte: \(sourceURL)"
+                }
+                return line
+            }.joined(separator: "\n")
         } catch {
             NSLog("[OV] web search (html) failed: %@", "\(error)")
             return ""
         }
     }
 
-    /// Extract the `result__snippet` text blocks from DuckDuckGo's HTML results page.
-    private static func parseSnippets(from html: String, limit: Int) -> [String] {
-        // Snippets look like: <a class="result__snippet" ...> TEXT </a>
-        let pattern = "class=\"result__snippet\"[^>]*>(.*?)</a>"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators, .caseInsensitive]) else {
-            return []
+    private static func parseResults(from html: String, limit: Int) -> [HTMLResult] {
+        let titlePattern = #"<a[^>]*class=\"result__a\"[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"#
+        let snippetPattern = #"class=\"result__snippet\"[^>]*>(.*?)</a>"#
+        let fullRange = NSRange(html.startIndex..<html.endIndex, in: html)
+
+        let titleRegex = try? NSRegularExpression(
+            pattern: titlePattern,
+            options: [.dotMatchesLineSeparators, .caseInsensitive]
+        )
+        let snippetRegex = try? NSRegularExpression(
+            pattern: snippetPattern,
+            options: [.dotMatchesLineSeparators, .caseInsensitive]
+        )
+
+        let titleMatches = titleRegex?.matches(in: html, range: fullRange) ?? []
+        let snippetMatches = snippetRegex?.matches(in: html, range: fullRange) ?? []
+        var output: [HTMLResult] = []
+
+        let count = min(limit, max(titleMatches.count, snippetMatches.count))
+        for index in 0..<count {
+            var title = "Resultado"
+            var sourceURL: String?
+            var snippet = ""
+
+            if index < titleMatches.count {
+                let match = titleMatches[index]
+                if match.numberOfRanges > 2,
+                   let hrefRange = Range(match.range(at: 1), in: html),
+                   let titleRange = Range(match.range(at: 2), in: html) {
+                    let rawHref = decodeEntities(String(html[hrefRange]))
+                    sourceURL = decodeDuckDuckGoURL(rawHref)
+                    title = stripHTML(String(html[titleRange]))
+                }
+            }
+
+            if index < snippetMatches.count {
+                let match = snippetMatches[index]
+                if match.numberOfRanges > 1,
+                   let range = Range(match.range(at: 1), in: html) {
+                    snippet = stripHTML(String(html[range]))
+                }
+            }
+
+            if snippet.count > 20 || title != "Resultado" {
+                output.append(HTMLResult(title: title, snippet: snippet, url: sourceURL))
+            }
         }
-        let range = NSRange(html.startIndex..<html.endIndex, in: html)
-        var results: [String] = []
-        for match in regex.matches(in: html, options: [], range: range) {
-            guard match.numberOfRanges > 1, let r = Range(match.range(at: 1), in: html) else { continue }
-            let clean = stripHTML(String(html[r]))
-            if clean.count > 20 { results.append(clean) }   // skip empty/tiny fragments
-            if results.count >= limit { break }
-        }
-        return results
+
+        return output
     }
 
-    /// Strip HTML tags and decode the common entities DuckDuckGo emits.
-    private static func stripHTML(_ s: String) -> String {
-        var out = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        let entities = ["&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"",
-                        "&#x27;": "'", "&#39;": "'", "&#x2F;": "/", "&nbsp;": " "]
-        for (k, v) in entities { out = out.replacingOccurrences(of: k, with: v) }
-        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    private static func decodeDuckDuckGoURL(_ raw: String) -> String? {
+        var value = raw
+        if value.hasPrefix("//") { value = "https:" + value }
+
+        guard let components = URLComponents(string: value) else { return raw }
+        if let redirected = components.queryItems?.first(where: { $0.name == "uddg" })?.value,
+           !redirected.isEmpty {
+            return redirected
+        }
+        return value
+    }
+
+    private static func stripHTML(_ string: String) -> String {
+        let noTags = string.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        return decodeEntities(noTags)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func decodeEntities(_ string: String) -> String {
+        var output = string
+        let entities = [
+            "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"",
+            "&#x27;": "'", "&#39;": "'", "&#x2F;": "/", "&nbsp;": " "
+        ]
+        for (entity, replacement) in entities {
+            output = output.replacingOccurrences(of: entity, with: replacement)
+        }
+        return output
+    }
+
+    private static func isTimeSensitiveQuery(_ query: String) -> Bool {
+        let normalized = query
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+
+        return [
+            "hoje", "ontem", "amanha", "agora", "atual", "recent", "ultimo", "proximo",
+            "placar", "resultado", "jogo", "partida", "noticia", "noticias", "preco", "cotacao",
+            "weather", "tempo", "today", "yesterday", "tomorrow", "latest", "next", "score"
+        ].contains { normalized.contains($0) }
     }
 }

@@ -12,7 +12,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "2.10.0"
-    CURRENT_PROJECT_VERSION: "24"
+    CURRENT_PROJECT_VERSION: "25"
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
@@ -75,19 +75,16 @@ targets:
       # On-device Gemma 4 (Local backend). MLX/MLXNN resolve transitively via these products.
       - package: mlx-swift-lm
         products:
-          - MLXLLM           # text LLMs (Qwen 2.5, Gemma 2) via LLMModelFactory
-          - MLXVLM           # vision models (Gemma 4, SmolVLM2) via VLMModelFactory
+          - MLXLLM
+          - MLXVLM
           - MLXLMCommon
-          - MLXHuggingFace   # #hubDownloader() / #huggingFaceTokenizerLoader()
-      # The macros above expand to HuggingFace.HubClient + Tokenizers.AutoTokenizer; mlx-swift-lm
-      # deliberately doesn't depend on these, so the consumer supplies them (same as OpenGlasses).
+          - MLXHuggingFace
       - package: swift-huggingface
         products:
           - HuggingFace
       - package: swift-transformers
         products:
           - Tokenizers
-      # On-device neural TTS (Kokoro).
       - package: KokoroSwift
         product: KokoroSwift
     preBuildScripts:
@@ -102,27 +99,12 @@ targets:
 packages:
   meta-wearables-dat-ios:
     url: https://github.com/facebook/meta-wearables-dat-ios
-    # Pinned: 0.7.0+ renamed StreamSession -> Stream/DeviceSession and 0.6.0 made its init
-    # inaccessible. GlassesManager targets the original 0.4.0 API (was `from: 0.4.0`, which
-    # floated to 0.8.0 and broke the build after 4 months of SDK drift).
     exactVersion: "0.4.0"
-  # PrismML fork of mlx-swift, adding 1-bit quantized Metal kernels (upstream PR pending).
-  # Needed to load Bonsai-8B (Qwen3-8B at 1-bit g128, 1.28 GB vs E2B's 3.6 GB). Declared at the
-  # ROOT so every consumer (mlx-swift-lm + the three vendored packages) resolves the same identity.
-  # Pinned to v0.31.6_prism, NOT the fork's default `prism` branch: `prism` is 10 commits behind and
-  # misses "gate NAX to gen-18+ (M5/gen-17 miscompute)" — a correctness fix for current Apple GPUs.
-  # Upstream base is 0.31.6 (we were on 0.31.4); Kokoro asks for >= 0.29.1, so it satisfies both.
   mlx-swift:
     url: https://github.com/PrismML-Eng/mlx-swift.git
     branch: v0.31.6_prism
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm.git
-    # Pinned to a main commit PAST the 3.31.4 tag that fixes Gemma 4 E2B loading. 3.31.4's VLM backbone
-    # built k_proj/v_proj/k_norm for ALL layers (never passed kvSharedOnly), so E2B's shared-KV layers
-    # 15-34 demanded weights the checkpoint omits → keyNotFound. This commit ("Fix MLXVLM Gemma4 loader
-    # to honor num_kv_shared_layers") passes kvSharedOnly per layer + guards attention on isKVSharedLayer.
-    # NOT bumped to main HEAD: a later commit (#369) adopts a newer mlx-swift API (greatestFiniteMagnitudeArray)
-    # we don't have (mlx-swift is 0.31.4, shared with the vendored Kokoro), so we pin just before it.
     revision: "68947ccdca79bcf7a26dc220f73caa060369513c"
   swift-huggingface:
     url: https://github.com/huggingface/swift-huggingface.git
@@ -130,8 +112,6 @@ packages:
   swift-transformers:
     url: https://github.com/huggingface/swift-transformers.git
     from: "1.0.0"
-  # On-device neural TTS (Kokoro-82M) via MLX Swift — VENDORED under Vendor/ for full visibility
-  # and reproducibility (source frozen in-repo, not pulled live). Shares mlx-swift with mlx-swift-lm.
   KokoroSwift:
     path: Vendor/kokoro-ios
 
