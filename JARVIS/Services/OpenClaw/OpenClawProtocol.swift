@@ -1,13 +1,12 @@
-// OpenVision - OpenClawProtocol.swift
+// JARVIS - OpenClawProtocol.swift
 // OpenClaw WebSocket protocol message types
 
 import Foundation
 
 // MARK: - Request/Response Types
 
-/// OpenClaw WebSocket request frame
 struct OpenClawRequest: Codable {
-    let type: String // "req"
+    let type: String
     let id: String
     let method: String
     let params: [String: AnyCodable]
@@ -20,32 +19,29 @@ struct OpenClawRequest: Codable {
     }
 }
 
-/// OpenClaw WebSocket response frame
 struct OpenClawResponse: Codable {
-    let type: String // "res"
+    let type: String
     let id: String
     let ok: Bool
     let payload: [String: AnyCodable]?
     let error: OpenClawError?
 }
 
-/// OpenClaw WebSocket event frame
 struct OpenClawEvent: Codable {
-    let type: String // "event"
+    let type: String
     let event: String
     let payload: [String: AnyCodable]?
     let seq: Int?
 }
 
-/// OpenClaw error structure
 struct OpenClawError: Codable {
     let code: String?
     let message: String?
+    let details: [String: AnyCodable]?
 }
 
 // MARK: - AnyCodable
 
-/// Type-erased Codable wrapper for JSON values
 struct AnyCodable: Codable {
     let value: Any
 
@@ -55,7 +51,6 @@ struct AnyCodable: Codable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-
         if container.decodeNil() {
             value = NSNull()
         } else if let bool = try? container.decode(Bool.self) {
@@ -73,14 +68,12 @@ struct AnyCodable: Codable {
         } else {
             throw DecodingError.dataCorruptedError(
                 in: container,
-                debugDescription: "Cannot decode value"
-            )
+                debugDescription: "Cannot decode value")
         }
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
-
         switch value {
         case is NSNull:
             try container.encodeNil()
@@ -88,6 +81,8 @@ struct AnyCodable: Codable {
             try container.encode(bool)
         case let int as Int:
             try container.encode(int)
+        case let int64 as Int64:
+            try container.encode(int64)
         case let double as Double:
             try container.encode(double)
         case let string as String:
@@ -96,43 +91,29 @@ struct AnyCodable: Codable {
             try container.encode(array.map { AnyCodable($0) })
         case let dict as [String: Any]:
             try container.encode(dict.mapValues { AnyCodable($0) })
+        case let array as [String]:
+            try container.encode(array)
+        case let dict as [String: Bool]:
+            try container.encode(dict)
         default:
             throw EncodingError.invalidValue(
                 value,
                 EncodingError.Context(
                     codingPath: encoder.codingPath,
-                    debugDescription: "Cannot encode value"
-                )
-            )
+                    debugDescription: "Cannot encode value of type \(type(of: value))"))
         }
     }
 
-    // MARK: - Convenience Accessors
-
-    var stringValue: String? {
-        value as? String
-    }
-
-    var intValue: Int? {
-        value as? Int
-    }
-
-    var boolValue: Bool? {
-        value as? Bool
-    }
-
-    var arrayValue: [Any]? {
-        value as? [Any]
-    }
-
-    var dictionaryValue: [String: Any]? {
-        value as? [String: Any]
-    }
+    var stringValue: String? { value as? String }
+    var intValue: Int? { value as? Int }
+    var doubleValue: Double? { value as? Double }
+    var boolValue: Bool? { value as? Bool }
+    var arrayValue: [Any]? { value as? [Any] }
+    var dictionaryValue: [String: Any]? { value as? [String: Any] }
 }
 
 // MARK: - Message Content Types
 
-/// Content types in OpenClaw messages
 enum OpenClawContentType: String {
     case text
     case image
@@ -140,29 +121,25 @@ enum OpenClawContentType: String {
     case toolResult = "tool_result"
 }
 
-/// Image content for sending to OpenClaw
 struct OpenClawImageContent {
     let mimeType: String
     let data: Data
 
-    var base64Encoded: String {
-        data.base64EncodedString()
-    }
+    var base64Encoded: String { data.base64EncodedString() }
 
     init(jpegData: Data) {
-        self.mimeType = "image/jpeg"
-        self.data = jpegData
+        mimeType = "image/jpeg"
+        data = jpegData
     }
 
     init(pngData: Data) {
-        self.mimeType = "image/png"
-        self.data = pngData
+        mimeType = "image/png"
+        data = pngData
     }
 }
 
 // MARK: - Event Types
 
-/// Known OpenClaw event types
 enum OpenClawEventType: String {
     case agentMessage = "agent_message"
     case toolStatus = "tool_status"
@@ -173,7 +150,6 @@ enum OpenClawEventType: String {
 
 // MARK: - Method Names
 
-/// OpenClaw RPC method names
 enum OpenClawMethod: String {
     case connect = "connect"
     case sendMessage = "chat.send"

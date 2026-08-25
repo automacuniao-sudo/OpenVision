@@ -1,114 +1,72 @@
-// OpenVision - OpenClawService.swift
-// Production-grade WebSocket client for OpenClaw with auto-reconnect
-//
-// Features:
-// - Persistent WebSocket connection
-// - Auto-reconnect with exponential backoff (12 attempts, 1s → 30s)
-// - Heartbeat ping/pong (20s interval)
-// - Network monitoring (pause on WiFi drop)
-// - App lifecycle handling (suspend on background)
-// - Tool status tracking
+// JARVIS - OpenClawService.swift
+// OpenClaw Gateway protocol v4 client with device pairing support.
 
+import Combine
 import Foundation
 import Network
-import Combine
 import UIKit
 
-/// OpenClaw WebSocket Service
-///
-/// Connects to an OpenClaw gateway via WebSocket for real-time AI communication.
-/// Handles connection management, auto-reconnect, and message routing.
 @MainActor
 final class OpenClawService: ObservableObject {
-    // MARK: - Singleton
-
     static let shared = OpenClawService()
 
-    // MARK: - Published State
-
-    /// Current connection state
     @Published var connectionState: AIConnectionState = .disconnected
-
-    /// Whether agent is currently processing a request
-    @Published var isProcessing: Bool = false
-
-    /// Current tool being executed (nil if none)
+    @Published var isProcessing = false
     @Published var currentToolName: String?
-
-    /// Whether a tool is currently running
-    @Published var isToolRunning: Bool = false
-
-    /// Last error message
+    @Published var isToolRunning = false
     @Published var lastError: String?
+    @Published var debugInfo = ""
 
-    /// Debug info for troubleshooting
-    @Published var debugInfo: String = ""
-
-    // MARK: - Configuration (from SettingsManager)
+    var onAgentMessage: ((String) -> Void)?
+    var onProcessingChanged: ((Bool) -> Void)?
+    var onToolStatusChanged: ((String?, Bool) -> Void)?
+    var onToolCall: ((String, [String: Any], @escaping (String) -> Void) -> Void)?
+    var onConnectionStateChanged: ((AIConnectionState) -> Void)?
+    var onDisconnected: (() -> Void)?
 
     private var gatewayURL: URL? {
-        guard let urlString = SettingsManager.shared.settings.openClawGatewayURL.nilIfEmpty,
-              let url = URL(string: urlString) else {
-            return nil
-        }
+        guard let raw = SettingsManager.shared.settings.openClawGatewayURL.nilIfEmpty,
+              let url = URL(string: raw) else { return nil }
         return url
     }
 
     private var authToken: String {
-        SettingsManager.shared.settings.openClawAuthToken
+        SettingsManager.shared.settings.openClawAuthToken.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - Callbacks
+    private struct ConnectChallenge {
+        let nonce: String
+        let timestampMs: Int64
+    }
 
-    /// Called when agent sends a text response
-    var onAgentMessage: ((String) -> Void)?
-
-    /// Called when agent processing state changes
-    var onProcessingChanged: ((Bool) -> Void)?
-
-    /// Called when tool status changes
-    var onToolStatusChanged: ((String?, Bool) -> Void)?
-
-    /// Called when a tool needs to be executed (returns tool result via callback)
-    var onToolCall: ((String, [String: Any], @escaping (String) -> Void) -> Void)?
-
-    /// Called when connection state changes
-    var onConnectionStateChanged: ((AIConnectionState) -> Void)?
-
-    /// Called when fully disconnected (not during reconnect)
-    var onDisconnected: (() -> Void)?
-
-    // MARK: - WebSocket
+    private let operatorScopes = ["operator.read", "operator.write"]
+    private let clientId = "openclaw-ios"
+    private let clientMode = "ui"
+    private let role = "operator"
 
     private var webSocket: URLSessionWebSocketTask?
     private var urlSession: URLSession?
-    private var requestCounter: Int = 0
+    private var requestCounter = 0
     private var pendingRequests: [String: CheckedContinuation<OpenClawResponse, Error>] = [:]
     private var receiveTask: Task<Void, Never>?
+    private var latestChallenge: ConnectChallenge?
 
-    // MARK: - Reconnection
-
-    private var intentionalDisconnect: Bool = false
+    private var intentionalDisconnect = false
     private var reconnectTask: Task<Void, Never>?
-    private var hasConnectedBefore: Bool = false
-
-    // MARK: - Network Monitoring
+    private var hasConnectedBefore = false
 
     private let networkMonitor = NWPathMonitor()
-    private let networkQueue = DispatchQueue(label: "openvision.network")
-    private var isNetworkAvailable: Bool = true
-
-    // MARK: - Heartbeat
+    private let networkQueue = DispatchQueue(label: "jarvis.openclaw.network")
+    private var isNetworkAvailable = true
 
     private var heartbeatTask: Task<Void, Never>?
-    private var awaitingPong: Bool = false
-
-    // MARK: - App Lifecycle
+    private var awaitingPong = false
 
     private var lifecycleObservers: [Any] = []
-    private var wasConnectedBeforeSuspend: Bool = false
+    private var wasConnectedBeforeSuspend = false
+    private var accumulatedResponse = ""
 
-    // MARK: - Initialization
+    private static var sessionKey = "jarvis-\(UUID().uuidString.prefix(8))"
 
     private init() {
         setupNetworkMonitor()
@@ -120,69 +78,50 @@ final class OpenClawService: ObservableObject {
         lifecycleObservers.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
-    // MARK: - State Machine
-
-    /// Transition to a new connection state
     private func transition(to newState: AIConnectionState) {
         let oldState = connectionState
         guard oldState != newState else { return }
-
         print("[OpenClaw] \(oldState.description) → \(newState.description)")
         connectionState = newState
-
         onConnectionStateChanged?(newState)
 
-        // State entry side effects
         switch newState {
         case .connected:
             hasConnectedBefore = true
             startHeartbeat()
-
         case .reconnecting(let attempt):
             stopHeartbeat()
             scheduleReconnect(attempt: attempt)
-
         case .disconnected:
             stopHeartbeat()
             cancelReconnect()
             closeWebSocket()
             failPendingRequests(error: AIBackendError.notConnected)
             onDisconnected?()
-
         case .suspended:
             stopHeartbeat()
             cancelReconnect()
             closeWebSocket()
             failPendingRequests(error: AIBackendError.notConnected)
-
         case .failed:
             stopHeartbeat()
             cancelReconnect()
             closeWebSocket()
             failPendingRequests(error: AIBackendError.connectionFailed)
             onDisconnected?()
-
         case .connecting:
             break
         }
     }
 
-    // MARK: - Connection
-
-    /// Connect to OpenClaw gateway with auto-retry
     func connect() async throws {
-        // Check configuration
         guard gatewayURL != nil, !authToken.isEmpty else {
             throw AIBackendError.notConfigured
         }
-
-        // Already connected?
         guard !connectionState.isUsable else {
             debugInfo = "Already connected"
             return
         }
-
-        // Already attempting?
         guard !connectionState.isAttempting else {
             debugInfo = "Connection in progress"
             return
@@ -192,253 +131,206 @@ final class OpenClawService: ObservableObject {
         lastError = nil
         transition(to: .connecting)
 
-        // Auto-retry up to 3 times
         var lastErr: Error?
         for attempt in 1...3 {
             do {
                 debugInfo = attempt > 1 ? "Retrying... (\(attempt)/3)" : "Connecting..."
                 try await performConnect()
-                return // Success!
+                return
             } catch {
                 lastErr = error
-                print("[OpenClaw] Connection attempt \(attempt) failed: \(error)")
+                print("[OpenClaw] Connection attempt \(attempt) failed: \(error.localizedDescription)")
+                // Pairing and authentication errors need user action; do not spam retries.
+                if isPairingOrAuthError(error) { break }
                 if attempt < 3 {
-                    // Wait before retry
-                    try? await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                    try? await Task.sleep(nanoseconds: 500_000_000)
                 }
             }
         }
 
-        // All retries failed
-        if let err = lastErr {
-            throw err
-        }
+        transition(to: .failed(lastErr?.localizedDescription ?? "Connection failed"))
+        throw lastErr ?? AIBackendError.connectionFailed
     }
 
-    /// Internal connect implementation
     private func performConnect() async throws {
         closeWebSocket()
         requestCounter = 0
+        latestChallenge = nil
         failPendingRequests(error: AIBackendError.notConnected)
 
-        guard !Task.isCancelled else { return }
+        guard let url = buildWebSocketURL() else { throw AIBackendError.notConfigured }
+        debugInfo = "Opening \(url.host ?? "gateway")..."
 
-        do {
-            debugInfo = "Creating WebSocket..."
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 60
+        config.timeoutIntervalForResource = 300
+        urlSession = URLSession(configuration: config)
+        webSocket = urlSession?.webSocketTask(with: url)
+        webSocket?.resume()
+        startReceiving()
 
-            guard let url = buildWebSocketURL() else {
-                throw AIBackendError.notConfigured
+        var running = false
+        for _ in 0..<50 {
+            if webSocket?.state == .running {
+                running = true
+                break
             }
-
-            let config = URLSessionConfiguration.default
-            config.timeoutIntervalForRequest = 60
-            config.timeoutIntervalForResource = 300
-
-            urlSession = URLSession(configuration: config)
-            webSocket = urlSession?.webSocketTask(with: url)
-            webSocket?.resume()
-
-            // Start receive loop
-            startReceiving()
-
-            // Wait for connection (up to 10 seconds)
-            debugInfo = "Waiting for connection..."
-            var connected = false
-            for _ in 0..<50 {
-                guard !Task.isCancelled else {
-                    closeWebSocket()
-                    return
-                }
-                if webSocket?.state == .running {
-                    connected = true
-                    break
-                }
-                try? await Task.sleep(nanoseconds: 200_000_000)
-            }
-
-            guard connected else {
-                throw AIBackendError.connectionTimeout
-            }
-
-            guard !Task.isCancelled else {
-                closeWebSocket()
-                return
-            }
-
-            // Send handshake
-            debugInfo = "Sending handshake..."
-            try await sendHandshake()
-
-            transition(to: .connected)
-            debugInfo = "Connected!"
-            print("[OpenClaw] Connected successfully")
-
-        } catch is CancellationError {
-            closeWebSocket()
-            return
-
-        } catch {
-            lastError = error.localizedDescription
-            debugInfo = "Error: \(error.localizedDescription)"
-            print("[OpenClaw] Connection error: \(error)")
-
-            closeWebSocket()
-
-            // Handle reconnect for auto-reconnect attempts
-            if case .reconnecting = connectionState {
-                return
-            }
-
-            // Decide whether to auto-reconnect
-            if !intentionalDisconnect && isNetworkAvailable {
-                transition(to: .reconnecting(attempt: 1))
-                throw error
-            } else {
-                transition(to: .failed("Connection failed"))
-                throw error
-            }
+            try Task.checkCancellation()
+            try? await Task.sleep(nanoseconds: 200_000_000)
         }
+        guard running else { throw AIBackendError.connectionTimeout }
+
+        debugInfo = "Waiting for OpenClaw challenge..."
+        let challenge = try await waitForChallenge()
+
+        debugInfo = "Authenticating device..."
+        try await sendHandshake(challenge: challenge)
+
+        transition(to: .connected)
+        debugInfo = "Connected to OpenClaw"
+        print("[OpenClaw] Protocol v4 connected successfully")
     }
 
-    /// Disconnect intentionally
     func disconnect() async {
         guard connectionState != .disconnected else { return }
-
-        print("[OpenClaw] Intentional disconnect")
         intentionalDisconnect = true
         transition(to: .disconnected)
     }
 
-    /// Build WebSocket URL with authentication
     private func buildWebSocketURL() -> URL? {
-        guard var components = URLComponents(url: gatewayURL!, resolvingAgainstBaseURL: false) else {
+        guard let gatewayURL,
+              var components = URLComponents(url: gatewayURL, resolvingAgainstBaseURL: false) else {
             return nil
         }
-
-        // Ensure WebSocket scheme
-        if components.scheme == "https" {
-            components.scheme = "wss"
-        } else if components.scheme == "http" {
-            components.scheme = "ws"
-        }
-
-        // Add path if needed
-        if components.path.isEmpty {
-            components.path = "/ws"
-        }
-
-        // Add token
-        var queryItems = components.queryItems ?? []
-        queryItems.append(URLQueryItem(name: "token", value: authToken))
-        components.queryItems = queryItems
-
+        if components.scheme == "https" { components.scheme = "wss" }
+        if components.scheme == "http" { components.scheme = "ws" }
+        // Current OpenClaw Gateway uses the root WebSocket endpoint. Do not append legacy /ws.
+        if components.path == "/ws" { components.path = "" }
+        // Authentication belongs in connect.params.auth, never in the URL query string.
+        components.queryItems = components.queryItems?.filter { $0.name.lowercased() != "token" }
         return components.url
     }
 
-    /// Close WebSocket without changing state
-    private func closeWebSocket() {
-        receiveTask?.cancel()
-        receiveTask = nil
-
-        webSocket?.cancel(with: .normalClosure, reason: nil)
-        webSocket = nil
-
-        urlSession?.invalidateAndCancel()
-        urlSession = nil
-    }
-
-    /// Fail all pending requests
-    private func failPendingRequests(error: Error) {
-        let pending = pendingRequests
-        pendingRequests.removeAll()
-        for (_, continuation) in pending {
-            continuation.resume(throwing: error)
+    private func waitForChallenge() async throws -> ConnectChallenge {
+        for _ in 0..<60 {
+            if let challenge = latestChallenge { return challenge }
+            guard webSocket?.state == .running else { throw AIBackendError.notConnected }
+            try Task.checkCancellation()
+            try? await Task.sleep(nanoseconds: 100_000_000)
         }
+        throw AIBackendError.requestFailed("OpenClaw did not send connect.challenge")
     }
 
-    // MARK: - Handshake
+    private func sendHandshake(challenge: ConnectChallenge) async throws {
+        guard let gatewayURL else { throw AIBackendError.notConfigured }
+        let identity = try JARVISOpenClawDeviceAuthStore.loadOrCreateIdentity()
+        let savedDeviceToken = JARVISOpenClawDeviceAuthStore.loadDeviceToken(for: gatewayURL)
+        let effectiveToken = savedDeviceToken ?? authToken
+        guard !effectiveToken.isEmpty else { throw AIBackendError.notConfigured }
 
-    /// Send initial connect handshake
-    private func sendHandshake() async throws {
-        // Match xmeta's handshake format exactly
+        let scopeString = operatorScopes.joined(separator: ",")
+        // OpenClaw's current Swift client intentionally uses the compatible v2
+        // signed payload while still negotiating wire protocol v4.
+        let signaturePayload = [
+            "v2",
+            identity.deviceId,
+            clientId,
+            clientMode,
+            role,
+            scopeString,
+            String(challenge.timestampMs),
+            effectiveToken,
+            challenge.nonce,
+        ].joined(separator: "|")
+        let signature = try identity.sign(signaturePayload)
+
+        var auth: [String: Any] = ["token": effectiveToken]
+        if let savedDeviceToken {
+            auth["deviceToken"] = savedDeviceToken
+        }
+
         let params: [String: Any] = [
-            "minProtocol": 3,
-            "maxProtocol": 3,
+            "minProtocol": 4,
+            "maxProtocol": 4,
             "client": [
-                "id": "cli",
-                "displayName": "OpenVision",
-                "version": "1.0.0",
+                "id": clientId,
+                "displayName": "JARVIS",
+                "version": "2.10.0",
                 "platform": "ios",
-                "mode": "cli"
+                "deviceFamily": "iphone",
+                "mode": clientMode,
             ],
-            "caps": [String](), // Empty array like xmeta
-            "auth": ["token": authToken],
-            "locale": "en-US",
-            "userAgent": "OpenVision/1.0.0"
+            "role": role,
+            "scopes": operatorScopes,
+            "caps": ["tool-events"],
+            "commands": [String](),
+            "permissions": [String: Bool](),
+            "auth": auth,
+            "locale": Locale.preferredLanguages.first ?? "pt-BR",
+            "userAgent": "JARVIS/2.10.0 (iOS)",
+            "device": [
+                "id": identity.deviceId,
+                "publicKey": identity.publicKeyBase64URL,
+                "signature": signature,
+                "signedAt": challenge.timestampMs,
+                "nonce": challenge.nonce,
+            ],
         ]
 
         let response = try await sendRequest(method: .connect, params: params)
-
         guard response.ok else {
-            let errorMsg = response.error?.message ?? "Handshake failed"
-            throw AIBackendError.requestFailed(errorMsg)
+            let code = response.error?.code ?? "CONNECT_FAILED"
+            let details = response.error?.details ?? [:]
+            let requestId = details["requestId"]?.stringValue
+                ?? details["pairingRequestId"]?.stringValue
+            if code == "PAIRING_REQUIRED" || response.error?.message?.localizedCaseInsensitiveContains("pairing") == true {
+                let suffix = requestId.map { " Request ID: \($0)." } ?? ""
+                debugInfo = "Pairing required. Approve JARVIS on the OpenClaw PC.\(suffix)"
+                throw AIBackendError.requestFailed("PAIRING_REQUIRED. Approve JARVIS on the PC with openclaw devices list / approve.\(suffix)")
+            }
+            throw AIBackendError.requestFailed(response.error?.message ?? code)
+        }
+
+        // hello-ok may mint a device token after pairing. Persist it per Gateway.
+        if let payload = response.payload,
+           let helloAuth = payload["auth"]?.dictionaryValue,
+           let deviceToken = helloAuth["deviceToken"] as? String,
+           !deviceToken.isEmpty {
+            try? JARVISOpenClawDeviceAuthStore.saveDeviceToken(deviceToken, for: gatewayURL)
+            print("[OpenClaw] Saved paired device token")
         }
     }
 
-    // MARK: - Send Message
-
-    /// Session key for conversation continuity
-    private static var sessionKey = "openvision-\(UUID().uuidString.prefix(8))"
-
-    /// Send a text message to the AI agent
     func sendMessage(_ text: String, imageData: Data? = nil) async throws {
-        guard connectionState.isUsable else {
-            throw AIBackendError.notConnected
-        }
-
+        guard connectionState.isUsable else { throw AIBackendError.notConnected }
         isProcessing = true
+        accumulatedResponse = ""
         onProcessingChanged?(true)
 
-        // Build params in the format expected by chat.send
         var params: [String: Any] = [
             "message": text,
             "sessionKey": Self.sessionKey,
-            "idempotencyKey": UUID().uuidString
+            "idempotencyKey": UUID().uuidString,
         ]
-
-        // Add image as attachment if provided
-        if let imageData = imageData {
-            let attachment: [String: Any] = [
+        if let imageData {
+            params["attachments"] = [[
                 "type": "image",
                 "mimeType": "image/jpeg",
-                "content": imageData.base64EncodedString()
-            ]
-            params["attachments"] = [attachment]
+                "content": imageData.base64EncodedString(),
+            ]]
         }
 
-        print("[OpenClaw] Sending message: \(text.prefix(50))...")
-
         let response = try await sendRequest(method: .sendMessage, params: params)
-
         guard response.ok else {
             isProcessing = false
             onProcessingChanged?(false)
-            let errorMsg = response.error?.message ?? "Message failed"
-            throw AIBackendError.requestFailed(errorMsg)
+            throw AIBackendError.requestFailed(response.error?.message ?? "Message failed")
         }
-
-        // Response comes via events (onAgentMessage callback), not in the initial response
-        print("[OpenClaw] Message sent, waiting for response events...")
     }
 
-    /// Cancel the current request/run
     func cancelRequest() {
         guard connectionState.isUsable else { return }
-
-        Task {
-            _ = try? await sendRequest(method: .cancelRun, params: [:])
-        }
-
+        Task { _ = try? await sendRequest(method: .cancelRun, params: [:]) }
         isProcessing = false
         isToolRunning = false
         currentToolName = nil
@@ -446,67 +338,40 @@ final class OpenClawService: ObservableObject {
         onToolStatusChanged?(nil, false)
     }
 
-    /// Interrupt the AI (barge-in support)
     func interrupt() async {
         cancelRequest()
     }
 
-    /// Send tool result back to OpenClaw
     func sendToolResult(callId: String, result: String) async throws {
         guard connectionState.isUsable else { return }
-
-        let params: [String: Any] = [
-            "callId": callId,
-            "result": result
-        ]
-
-        print("[OpenClaw] Sending tool result for \(callId): \(result.prefix(50))...")
-        _ = try await sendRequest(method: .toolResult, params: params)
+        _ = try await sendRequest(method: .toolResult, params: ["callId": callId, "result": result])
     }
 
-    // MARK: - Request/Response
-
-    /// Send a request and wait for response
     private func sendRequest(method: OpenClawMethod, params: [String: Any]) async throws -> OpenClawResponse {
-        guard let webSocket = webSocket, webSocket.state == .running else {
-            throw AIBackendError.notConnected
-        }
-
+        guard let webSocket, webSocket.state == .running else { throw AIBackendError.notConnected }
         requestCounter += 1
-        let requestId = "req-\(requestCounter)"
-
+        let requestId = "req-\(requestCounter)-\(UUID().uuidString.prefix(6))"
         let request = OpenClawRequest(id: requestId, method: method.rawValue, params: params)
-
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(request)
+        let data = try JSONEncoder().encode(request)
 
         return try await withCheckedThrowingContinuation { continuation in
-            // Store continuation first
             pendingRequests[requestId] = continuation
-
             webSocket.send(.data(data)) { [weak self] error in
-                if let error = error {
-                    // Only resume if we can remove from pending (prevents double-resume)
-                    Task { @MainActor in
-                        if self?.pendingRequests.removeValue(forKey: requestId) != nil {
-                            continuation.resume(throwing: error)
-                        }
-                        // If removeValue returns nil, the continuation was already
-                        // resumed by handleResponse or failPendingRequests
+                guard let error else { return }
+                Task { @MainActor in
+                    if self?.pendingRequests.removeValue(forKey: requestId) != nil {
+                        continuation.resume(throwing: error)
                     }
                 }
             }
         }
     }
 
-    // MARK: - Receive Loop
-
-    /// Start receiving messages from WebSocket
     private func startReceiving() {
+        receiveTask?.cancel()
         receiveTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let self = self, let webSocket = self.webSocket else { break }
-
+                guard let self, let webSocket = self.webSocket else { return }
                 do {
                     let message = try await webSocket.receive()
                     await self.handleMessage(message)
@@ -514,194 +379,134 @@ final class OpenClawService: ObservableObject {
                     if !Task.isCancelled {
                         await self.handleConnectionDrop(error: error)
                     }
-                    break
+                    return
                 }
             }
         }
     }
 
-    /// Handle incoming WebSocket message
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) async {
         let data: Data
-
         switch message {
-        case .data(let d):
-            data = d
-        case .string(let s):
-            data = Data(s.utf8)
-        @unknown default:
+        case .data(let value): data = value
+        case .string(let value): data = Data(value.utf8)
+        @unknown default: return
+        }
+
+        if let response = try? JSONDecoder().decode(OpenClawResponse.self, from: data), response.type == "res" {
+            if let continuation = pendingRequests.removeValue(forKey: response.id) {
+                continuation.resume(returning: response)
+            }
             return
         }
 
-        // Try to decode as response
-        if let response = try? JSONDecoder().decode(OpenClawResponse.self, from: data),
-           response.type == "res" {
-            handleResponse(response)
-            return
-        }
-
-        // Try to decode as event
-        if let event = try? JSONDecoder().decode(OpenClawEvent.self, from: data),
-           event.type == "event" {
+        if let event = try? JSONDecoder().decode(OpenClawEvent.self, from: data), event.type == "event" {
+            if event.event == "connect.challenge",
+               let payload = event.payload,
+               let nonce = payload["nonce"]?.stringValue,
+               !nonce.isEmpty {
+                let timestamp: Int64?
+                if let int = payload["ts"]?.intValue {
+                    timestamp = Int64(int)
+                } else if let double = payload["ts"]?.doubleValue {
+                    timestamp = Int64(double)
+                } else {
+                    timestamp = nil
+                }
+                if let timestamp, timestamp >= 0 {
+                    latestChallenge = ConnectChallenge(nonce: nonce, timestampMs: timestamp)
+                    print("[OpenClaw] Received connect.challenge")
+                }
+                return
+            }
             handleEvent(event)
             return
         }
 
-        print("[OpenClaw] Unknown message type")
+        print("[OpenClaw] Unknown frame")
     }
 
-    /// Handle response to a request
-    private func handleResponse(_ response: OpenClawResponse) {
-        guard let continuation = pendingRequests.removeValue(forKey: response.id) else {
-            print("[OpenClaw] No pending request for \(response.id)")
-            return
-        }
-
-        continuation.resume(returning: response)
-    }
-
-    /// Accumulated response text for streaming
-    private var accumulatedResponse: String = ""
-
-    /// Handle event from server
     private func handleEvent(_ event: OpenClawEvent) {
-        guard let payload = event.payload else {
-            print("[OpenClaw] Event without payload: \(event.event)")
-            return
-        }
+        guard let payload = event.payload else { return }
 
         switch event.event {
         case "agent":
-            // Agent streaming events - check the stream type
             let stream = payload["stream"]?.stringValue ?? ""
             let data = payload["data"]?.dictionaryValue ?? [:]
-
-            switch stream {
-            case "assistant":
-                // Text chunk from assistant
-                if let text = data["text"] as? String, !text.isEmpty {
-                    accumulatedResponse += text
-                    print("[OpenClaw] Assistant chunk: \(text.prefix(50))...")
-                }
-
-            case "tool":
-                // Tool events
+            if stream == "assistant", let text = data["text"] as? String, !text.isEmpty {
+                accumulatedResponse += text
+            } else if stream == "tool" {
                 if let toolName = data["name"] as? String {
                     currentToolName = toolName
                     isToolRunning = true
                     onToolStatusChanged?(toolName, true)
-                    print("[OpenClaw] Tool call: \(toolName)")
-
-                    // Extract tool arguments
                     let args = data["arguments"] as? [String: Any] ?? data["input"] as? [String: Any] ?? [:]
-                    let toolCallId = data["id"] as? String ?? data["callId"] as? String
-
-                    // Call the tool handler if registered
+                    let callId = data["id"] as? String ?? data["callId"] as? String
                     onToolCall?(toolName, args) { [weak self] result in
                         Task { @MainActor in
-                            // Send tool result back if we have a call ID
-                            if let callId = toolCallId {
-                                try? await self?.sendToolResult(callId: callId, result: result)
-                            }
+                            if let callId { try? await self?.sendToolResult(callId: callId, result: result) }
                             self?.isToolRunning = false
-                            self?.onToolStatusChanged?(self?.currentToolName, false)
+                            self?.onToolStatusChanged?(toolName, false)
                         }
                     }
                 }
-                if let status = data["status"] as? String, status == "complete" {
+                if data["status"] as? String == "complete" {
                     isToolRunning = false
                     onToolStatusChanged?(currentToolName, false)
                 }
-
-            default:
-                print("[OpenClaw] Agent stream: \(stream)")
             }
 
         case "chat":
-            // Chat events - check the state
             let state = payload["state"]?.stringValue ?? ""
-            print("[OpenClaw] Chat event: state=\(state)")
-
             switch state {
             case "delta":
-                // Streaming delta - accumulate text
-                if let message = payload["message"]?.dictionaryValue,
-                   let content = message["content"] as? [[String: Any]] {
-                    for block in content {
-                        if let text = block["text"] as? String, !text.isEmpty {
-                            accumulatedResponse += text
-                            print("[OpenClaw] Delta: \(text.prefix(30))...")
-                        }
-                    }
-                }
-
+                appendTextBlocks(from: payload)
             case "final":
-                // Final response
-                print("[OpenClaw] Got final response!")
                 isProcessing = false
                 onProcessingChanged?(false)
-
-                var finalText = ""
-                if let message = payload["message"]?.dictionaryValue,
-                   let content = message["content"] as? [[String: Any]] {
-                    for block in content {
-                        if let text = block["text"] as? String {
-                            finalText += text
-                        }
-                    }
-                }
-
-                // Use final text or accumulated text
-                let responseText = !finalText.isEmpty ? finalText : accumulatedResponse
-
-                if !responseText.isEmpty {
-                    print("[OpenClaw] Response: \(responseText.prefix(100))...")
-                    onAgentMessage?(responseText)
-                } else {
-                    print("[OpenClaw] No response text found!")
-                }
-
-                // Reset for next message
+                let finalText = textBlocks(from: payload)
+                let responseText = finalText.isEmpty ? accumulatedResponse : finalText
                 accumulatedResponse = ""
-
+                if !responseText.isEmpty { onAgentMessage?(responseText) }
             case "error":
                 isProcessing = false
                 onProcessingChanged?(false)
-                let errorMsg = payload["errorMessage"]?.stringValue ?? "Unknown error"
-                print("[OpenClaw] Chat error: \(errorMsg)")
-                lastError = errorMsg
-                onAgentMessage?("Sorry, there was an error: \(errorMsg)")
+                let message = payload["errorMessage"]?.stringValue ?? "OpenClaw error"
+                lastError = message
                 accumulatedResponse = ""
-
+                onAgentMessage?("OpenClaw error: \(message)")
             case "aborted":
                 isProcessing = false
                 onProcessingChanged?(false)
-                print("[OpenClaw] Chat aborted")
                 accumulatedResponse = ""
-
             default:
-                print("[OpenClaw] Chat state: \(state)")
+                break
             }
 
-        case "connect.challenge", "tick", "presence", "health":
-            // Ignore these events
+        case "tick", "presence", "health", "connect.challenge":
             break
-
         default:
-            print("[OpenClaw] Unknown event: \(event.event)")
+            break
         }
     }
 
-    /// Handle connection drop
-    private func handleConnectionDrop(error: Error) async {
-        print("[OpenClaw] Connection dropped: \(error)")
+    private func textBlocks(from payload: [String: AnyCodable]) -> String {
+        guard let message = payload["message"]?.dictionaryValue,
+              let content = message["content"] as? [[String: Any]] else { return "" }
+        return content.compactMap { $0["text"] as? String }.joined()
+    }
 
+    private func appendTextBlocks(from payload: [String: AnyCodable]) {
+        let text = textBlocks(from: payload)
+        if !text.isEmpty { accumulatedResponse += text }
+    }
+
+    private func handleConnectionDrop(error: Error) async {
+        print("[OpenClaw] Connection dropped: \(error.localizedDescription)")
         guard !intentionalDisconnect else {
             transition(to: .disconnected)
             return
         }
-
-        // Auto-reconnect if we had a successful connection before
         if hasConnectedBefore && isNetworkAvailable {
             transition(to: .reconnecting(attempt: 1))
         } else {
@@ -709,92 +514,65 @@ final class OpenClawService: ObservableObject {
         }
     }
 
-    // MARK: - Auto-Reconnect
-
-    /// Schedule reconnect with exponential backoff
     private func scheduleReconnect(attempt: Int) {
         guard attempt <= Constants.OpenClaw.maxReconnectAttempts else {
-            print("[OpenClaw] Max reconnect attempts exceeded")
             transition(to: .failed("Max reconnect attempts exceeded"))
             return
         }
-
-        // Calculate delay with full jitter
-        let baseDelay = Constants.OpenClaw.initialReconnectDelay
-        let maxDelay = Constants.OpenClaw.maxReconnectDelay
-        let exponentialDelay = min(maxDelay, baseDelay * pow(2.0, Double(attempt - 1)))
-        let jitteredDelay = Double.random(in: 0...exponentialDelay)
-
-        print("[OpenClaw] Scheduling reconnect attempt \(attempt) in \(String(format: "%.1f", jitteredDelay))s")
-
+        let exponential = min(
+            Constants.OpenClaw.maxReconnectDelay,
+            Constants.OpenClaw.initialReconnectDelay * pow(2.0, Double(attempt - 1)))
+        let delay = Double.random(in: 0...exponential)
         reconnectTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(jitteredDelay * 1_000_000_000))
-
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled else { return }
-
             await self?.attemptReconnect(attempt: attempt)
         }
     }
 
-    /// Attempt reconnection
     private func attemptReconnect(attempt: Int) async {
         guard case .reconnecting = connectionState else { return }
-
         do {
             try await performConnect()
         } catch {
-            // performConnect handles the transition to next reconnect attempt
             if case .reconnecting = connectionState {
                 transition(to: .reconnecting(attempt: attempt + 1))
             }
         }
     }
 
-    /// Cancel scheduled reconnect
     private func cancelReconnect() {
         reconnectTask?.cancel()
         reconnectTask = nil
     }
 
-    // MARK: - Heartbeat
-
-    /// Start heartbeat ping/pong
     private func startHeartbeat() {
+        heartbeatTask?.cancel()
         heartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: UInt64(Constants.OpenClaw.heartbeatInterval * 1_000_000_000))
-
-                guard !Task.isCancelled else { break }
-
+                guard !Task.isCancelled else { return }
                 await self?.sendPing()
             }
         }
     }
 
-    /// Stop heartbeat
     private func stopHeartbeat() {
         heartbeatTask?.cancel()
         heartbeatTask = nil
         awaitingPong = false
     }
 
-    /// Send ping and expect pong
     private func sendPing() async {
-        guard let webSocket = webSocket, webSocket.state == .running else { return }
-
+        guard let webSocket, webSocket.state == .running else { return }
         if awaitingPong {
-            // Previous pong never arrived - connection is dead
-            print("[OpenClaw] Pong timeout - connection dead")
             await handleConnectionDrop(error: AIBackendError.connectionTimeout)
             return
         }
-
         awaitingPong = true
-
         webSocket.sendPing { [weak self] error in
             Task { @MainActor in
-                if let error = error {
-                    print("[OpenClaw] Ping failed: \(error)")
+                if let error {
                     await self?.handleConnectionDrop(error: error)
                 } else {
                     self?.awaitingPong = false
@@ -803,64 +581,54 @@ final class OpenClawService: ObservableObject {
         }
     }
 
-    // MARK: - Network Monitoring
+    private func closeWebSocket() {
+        receiveTask?.cancel()
+        receiveTask = nil
+        webSocket?.cancel(with: .normalClosure, reason: nil)
+        webSocket = nil
+        urlSession?.invalidateAndCancel()
+        urlSession = nil
+        latestChallenge = nil
+    }
 
-    /// Setup network path monitor
+    private func failPendingRequests(error: Error) {
+        let pending = pendingRequests
+        pendingRequests.removeAll()
+        pending.values.forEach { $0.resume(throwing: error) }
+    }
+
     private func setupNetworkMonitor() {
         networkMonitor.pathUpdateHandler = { [weak self] path in
             Task { @MainActor in
-                let wasAvailable = self?.isNetworkAvailable ?? true
-                self?.isNetworkAvailable = path.status == .satisfied
-
-                if !wasAvailable && path.status == .satisfied {
-                    // Network restored - reconnect if suspended
-                    if self?.connectionState == .suspended {
-                        print("[OpenClaw] Network restored, resuming connection")
-                        try? await self?.connect()
-                    }
-                } else if wasAvailable && path.status != .satisfied {
-                    // Network lost - suspend if connected
-                    if self?.connectionState.isUsable == true {
-                        print("[OpenClaw] Network lost, suspending connection")
-                        self?.transition(to: .suspended)
-                    }
+                guard let self else { return }
+                let wasAvailable = self.isNetworkAvailable
+                self.isNetworkAvailable = path.status == .satisfied
+                if !wasAvailable && self.isNetworkAvailable && self.connectionState == .suspended {
+                    try? await self.connect()
+                } else if wasAvailable && !self.isNetworkAvailable && self.connectionState.isUsable {
+                    self.transition(to: .suspended)
                 }
             }
         }
-
         networkMonitor.start(queue: networkQueue)
     }
 
-    // MARK: - App Lifecycle
-
-    /// Setup app lifecycle observers
     private func setupLifecycleObservers() {
-        // App entering background
-        let backgroundObserver = NotificationCenter.default.addObserver(
+        let background = NotificationCenter.default.addObserver(
             forName: UIApplication.didEnterBackgroundNotification,
             object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.handleAppBackground()
+            queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.handleAppBackground() }
             }
-        }
-
-        // App entering foreground
-        let foregroundObserver = NotificationCenter.default.addObserver(
+        let foreground = NotificationCenter.default.addObserver(
             forName: UIApplication.willEnterForegroundNotification,
             object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                await self?.handleAppForeground()
+            queue: .main) { [weak self] _ in
+                Task { @MainActor in await self?.handleAppForeground() }
             }
-        }
-
-        lifecycleObservers = [backgroundObserver, foregroundObserver]
+        lifecycleObservers = [background, foreground]
     }
 
-    /// Handle app entering background
     private func handleAppBackground() {
         if connectionState.isUsable {
             wasConnectedBeforeSuspend = true
@@ -870,48 +638,36 @@ final class OpenClawService: ObservableObject {
         }
     }
 
-    /// Handle app entering foreground
     private func handleAppForeground() async {
         if wasConnectedBeforeSuspend && connectionState == .suspended {
-            print("[OpenClaw] Resuming connection after foreground")
             try? await connect()
         }
     }
 
-    // MARK: - Test Connection
-
-    /// Test connection to the gateway (for settings UI)
     func testConnection() async -> Result<Void, Error> {
         guard gatewayURL != nil, !authToken.isEmpty else {
             return .failure(AIBackendError.notConfigured)
         }
-
         do {
-            // Save current state
             let wasConnected = connectionState.isUsable
-
-            // If not connected, try to connect
-            if !wasConnected {
-                try await connect()
-            }
-
-            // If we got here, connection succeeded
-            if !wasConnected {
-                // Disconnect if we connected just for the test
-                await disconnect()
-            }
-
+            if !wasConnected { try await connect() }
+            if !wasConnected { await disconnect() }
             return .success(())
         } catch {
             return .failure(error)
         }
     }
+
+    private func isPairingOrAuthError(_ error: Error) -> Bool {
+        let text = error.localizedDescription.lowercased()
+        return text.contains("pairing_required")
+            || text.contains("pairing required")
+            || text.contains("unauthorized")
+            || text.contains("authentication")
+            || text.contains("invalid token")
+    }
 }
 
-// MARK: - String Extension
-
 private extension String {
-    var nilIfEmpty: String? {
-        isEmpty ? nil : self
-    }
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
