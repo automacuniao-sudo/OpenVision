@@ -1,0 +1,70 @@
+name: Build OpenVision Original iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - openvision-original-test
+
+jobs:
+  build:
+    runs-on: macos-26
+
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Mostrar ambiente
+        run: |
+          sw_vers
+          xcodebuild -version
+
+      - name: Instalar XcodeGen
+        run: |
+          brew install xcodegen
+
+      - name: Criar arquivos de configuracao
+        run: |
+          cp Config.xcconfig.example Config.xcconfig
+          cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
+
+          sed -i '' 's/YOUR_TEAM_ID//' Config.xcconfig
+          sed -i '' 's/com.yourcompany.openvision/com.automacuniao.openvision/' Config.xcconfig
+          sed -i '' 's/YOUR_META_APP_ID/0000000000/g' Config.xcconfig
+
+      - name: Instalar Metal Toolchain
+        run: |
+          xcodebuild -downloadComponent MetalToolchain
+
+      - name: Gerar projeto Xcode
+        run: |
+          xcodegen generate
+
+      - name: Compilar sem assinatura
+        run: |
+          xcodebuild \
+            -project OpenVision.xcodeproj \
+            -scheme OpenVision \
+            -configuration Debug \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Criar IPA
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/DerivedData/Build/Products/Debug-iphoneos/OpenVision.app build/ipa/Payload/
+
+          cd build/ipa
+          zip -r OpenVision-unsigned.ipa Payload
+
+      - name: Salvar IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenVision-Original-iOS-unsigned
+          path: build/ipa/OpenVision-unsigned.ipa
