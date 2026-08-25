@@ -72,6 +72,9 @@ targets:
         products:
           - MWDATCore
           - MWDATCamera
+      - package: FluidAudio
+        products:
+          - FluidAudio
       # On-device Gemma 4 (Local backend). MLX/MLXNN resolve transitively via these products.
       - package: mlx-swift-lm
         products:
@@ -106,6 +109,9 @@ packages:
   mlx-swift-lm:
     url: https://github.com/ml-explore/mlx-swift-lm.git
     revision: "68947ccdca79bcf7a26dc220f73caa060369513c"
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio.git
+    from: "0.15.5"
   swift-huggingface:
     url: https://github.com/huggingface/swift-huggingface.git
     from: "0.1.0"
