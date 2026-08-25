@@ -1,15 +1,11 @@
-// OpenVision - VoiceSettingsView.swift
+// JARVIS - VoiceSettingsView.swift
 // Voice control settings: wake word, conversation timeout
 
 import SwiftUI
 import AVFoundation
 
 struct VoiceSettingsView: View {
-    // MARK: - Environment
-
     @EnvironmentObject var settingsManager: SettingsManager
-
-    // MARK: - Computed Properties
 
     private var selectedVoiceName: String {
         guard let identifier = settingsManager.settings.selectedVoiceIdentifier,
@@ -19,11 +15,8 @@ struct VoiceSettingsView: View {
         return voice.name
     }
 
-    // MARK: - Body
-
     var body: some View {
         Form {
-            // Wake Word Section
             Section {
                 Toggle(isOn: $settingsManager.settings.wakeWordEnabled) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -39,7 +32,7 @@ struct VoiceSettingsView: View {
                         Text("Wake Phrase")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        TextField("Ok Vision", text: $settingsManager.settings.wakeWord)
+                        TextField("Ok Jarvis", text: $settingsManager.settings.wakeWord)
                             .autocorrectionDisabled()
                     }
                 }
@@ -47,13 +40,12 @@ struct VoiceSettingsView: View {
                 Text("Wake Word")
             } footer: {
                 if settingsManager.settings.wakeWordEnabled {
-                    Text("Say \"\(settingsManager.settings.wakeWord)\" to activate the assistant. This protects your privacy by only listening after the wake phrase.")
+                    Text("Say \"\(settingsManager.settings.wakeWord)\" to activate JARVIS. This protects your privacy by only starting a command after the wake phrase.")
                 } else {
-                    Text("Wake word is disabled. The app will always be listening when active (Gemini Live mode behavior).")
+                    Text("Wake word is disabled. The app will listen while the voice session is active.")
                 }
             }
 
-            // Microphone Section
             Section {
                 Toggle(isOn: $settingsManager.settings.preferGlassesMic) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -66,10 +58,9 @@ struct VoiceSettingsView: View {
             } header: {
                 Text("Microphone")
             } footer: {
-                Text("When on, voice input uses the glasses' Bluetooth microphone for true hands-free use, and falls back to the phone mic automatically when the glasses aren't the audio device. Uses more battery. Turn off to always use the phone mic.")
+                Text("When on, voice input uses the glasses' Bluetooth microphone when it is available and falls back to the iPhone microphone automatically.")
             }
 
-            // Conversation Section
             Section {
                 Picker("Auto-End Timeout", selection: $settingsManager.settings.conversationTimeout) {
                     Text("15 seconds").tag(TimeInterval(15))
@@ -84,7 +75,6 @@ struct VoiceSettingsView: View {
                 Text("Automatically end the conversation after this period of silence.")
             }
 
-            // TTS Voice Section
             Section {
                 Picker("Speech Engine", selection: $settingsManager.settings.ttsEngine) {
                     ForEach(TTSEngineType.allCases) { engine in
@@ -124,13 +114,12 @@ struct VoiceSettingsView: View {
                 Text("Output Voice")
             } footer: {
                 if settingsManager.settings.ttsEngine == .kokoro {
-                    Text("Kokoro is a natural, on-device neural voice — private and offline. Download its model (~600 MB) under Kokoro Model, then it runs entirely on-device.")
+                    Text("Kokoro is a natural, on-device neural voice. Download its model first, then it runs locally.")
                 } else {
-                    Text("Apple's built-in system voice. For higher quality, download a Premium/Enhanced voice in iOS Settings → Accessibility → Spoken Content.")
+                    Text("Apple's built-in system voice. Premium/Enhanced voices can be installed from iOS Settings.")
                 }
             }
 
-            // Feedback Section
             Section {
                 Toggle(isOn: $settingsManager.settings.playActivationSound) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -144,7 +133,6 @@ struct VoiceSettingsView: View {
                 Text("Feedback")
             }
 
-            // Info Section
             Section {
                 HStack {
                     Text("Supported Phrases")
@@ -165,22 +153,20 @@ struct VoiceSettingsView: View {
             } header: {
                 Text("Examples")
             } footer: {
-                Text("The wake word detection is flexible and will recognize variations like \"OK Vision\" or \"Okay Vision\".")
+                Text("JARVIS recognizes the configured phrase plus common Jarvis variants such as \"OK Jarvis\" and \"Hey Jarvis\".")
             }
         }
-        .navigationTitle("Voice Control")
+        .navigationTitle("JARVIS Voice")
         .navigationBarTitleDisplayMode(.inline)
     }
-
-    // MARK: - Sample Phrases
 
     private var samplePhrases: [String] {
         let wake = settingsManager.settings.wakeWord
         return [
-            "\(wake), what's the weather?",
-            "\(wake), take a photo",
-            "\(wake), remind me to...",
-            "\(wake), search for..."
+            "\(wake), qual é a previsão do tempo?",
+            "\(wake), quanto de bateria eu tenho?",
+            "\(wake), me lembre de...",
+            "\(wake), pesquise..."
         ]
     }
 }
