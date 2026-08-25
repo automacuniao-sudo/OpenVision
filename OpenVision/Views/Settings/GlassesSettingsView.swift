@@ -4,21 +4,14 @@
 import SwiftUI
 
 struct GlassesSettingsView: View {
-    // MARK: - Environment
-
     @EnvironmentObject var glassesManager: GlassesManager
-
-    // MARK: - State
 
     @State private var isRegistering: Bool = false
     @State private var errorMessage: String?
     @State private var showingUnregisterConfirmation: Bool = false
 
-    // MARK: - Body
-
     var body: some View {
         Form {
-            // Registration Section
             Section {
                 if glassesManager.isRegistered {
                     HStack {
@@ -75,7 +68,6 @@ struct GlassesSettingsView: View {
                 Text("Registration opens the Meta AI app where you'll grant OpenVision access to your glasses.")
             }
 
-            // Device Status Section
             if glassesManager.isRegistered {
                 Section {
                     HStack {
@@ -114,7 +106,6 @@ struct GlassesSettingsView: View {
                     Text("Device Status")
                 }
 
-                // Camera Controls
                 Section {
                     Button {
                         Task {
@@ -124,6 +115,14 @@ struct GlassesSettingsView: View {
                         Label("Start Camera Stream", systemImage: "video")
                     }
                     .disabled(glassesManager.isStreaming)
+
+                    Button {
+                        Task {
+                            await glassesManager.installOrUpdateGlassesApp()
+                        }
+                    } label: {
+                        Label("Install/Update Glasses App", systemImage: "arrow.down.circle")
+                    }
 
                     Button {
                         Task {
@@ -145,11 +144,10 @@ struct GlassesSettingsView: View {
                 } header: {
                     Text("Camera Controls")
                 } footer: {
-                    Text("Use camera controls to test glasses connectivity.")
+                    Text("If registration succeeds but a camera session reports Device unavailable, use Install/Update Glasses App and try again.")
                 }
             }
 
-            // Help Section
             Section {
                 Link(destination: URL(string: "https://developer.meta.com/docs/wearables")!) {
                     HStack {
@@ -196,8 +194,6 @@ struct GlassesSettingsView: View {
         }
     }
 
-    // MARK: - Methods
-
     private func register() {
         isRegistering = true
         errorMessage = nil
@@ -234,22 +230,22 @@ struct TroubleshootingView: View {
                 )
                 TroubleshootingItem(
                     title: "App not appearing in Meta AI",
-                    solution: "Check that your Meta App ID is correctly configured."
+                    solution: "Check that your Meta App ID and Client Token are correctly configured."
                 )
             }
 
             Section("Connection Issues") {
                 TroubleshootingItem(
                     title: "No devices found",
-                    solution: "Ensure your glasses are paired with your iPhone via Bluetooth."
+                    solution: "Ensure the glasses are paired in Meta AI/Bluetooth. Newer frames also require a recent DAT SDK."
+                )
+                TroubleshootingItem(
+                    title: "Device unavailable",
+                    solution: "Use Install/Update Glasses App, then retry. Also verify Camera permission and Team ID in Meta Wearables Developer Center."
                 )
                 TroubleshootingItem(
                     title: "Streaming not starting",
-                    solution: "Close other apps that might be using the glasses camera."
-                )
-                TroubleshootingItem(
-                    title: "Poor video quality",
-                    solution: "Make sure you have good lighting and stable Bluetooth connection."
+                    solution: "Close other apps using the glasses camera and retry. Diagnostics now record DeviceSession state and Meta DAT SDK logs."
                 )
             }
         }
