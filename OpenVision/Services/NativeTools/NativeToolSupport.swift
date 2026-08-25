@@ -4,27 +4,56 @@
 import Foundation
 import UserNotifications
 
-/// The user utterance that triggered the current model turn. Backends set it before invoking
-/// their model so the registry can sanity-check tool args against what the user actually said
-/// (see `NativeToolSupport.applyRelativeTimeGuard`). Entries expire — a tool call fired long
-/// after the last text command (e.g. a Gemini audio turn) must not match a stale utterance.
+/// User utterances that triggered recent model turns. Backends set the newest command before
+/// invoking their model so native tools can sanity-check model-generated arguments against what
+/// the user actually said. Keeping a short history also lets a referential follow-up such as
+/// "pesquise no Google" recover the last meaningful topic instead of letting the model silently
+/// switch from "último jogo" to "próximo jogo".
 @MainActor
 final class NativeToolContext {
     static let shared = NativeToolContext()
     private init() {}
 
-    private var command: String?
-    private var setAt = Date.distantPast
-
-    func set(_ command: String) {
-        self.command = command
-        self.setAt = Date()
+    private struct Entry {
+        let command: String
+        let setAt: Date
     }
 
-    /// The utterance, if one was recorded within the last two minutes.
+    private var entries: [Entry] = []
+    private let maxEntries = 12
+    private let maxAge: TimeInterval = 5 * 60
+
+    func set(_ command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let now = Date()
+        entries.removeAll { now.timeIntervalSince($0.setAt) >= maxAge }
+
+        // Speech recognition can occasionally submit the exact same final command twice. Avoid
+        // polluting the context stack with duplicates while still refreshing its timestamp.
+        if entries.last?.command.caseInsensitiveCompare(trimmed) == .orderedSame {
+            entries[entries.count - 1] = Entry(command: trimmed, setAt: now)
+        } else {
+            entries.append(Entry(command: trimmed, setAt: now))
+        }
+
+        if entries.count > maxEntries {
+            entries.removeFirst(entries.count - maxEntries)
+        }
+    }
+
+    /// The newest utterance, if one was recorded recently.
     func recentCommand() -> String? {
-        guard Date().timeIntervalSince(setAt) < 120 else { return nil }
-        return command
+        recentCommands().last
+    }
+
+    /// Recent utterances in chronological order. Native tools use this only to preserve explicit
+    /// user intent across short follow-ups; stale conversation history is deliberately excluded.
+    func recentCommands() -> [String] {
+        let now = Date()
+        entries.removeAll { now.timeIntervalSince($0.setAt) >= maxAge }
+        return entries.map(\.command)
     }
 }
 
