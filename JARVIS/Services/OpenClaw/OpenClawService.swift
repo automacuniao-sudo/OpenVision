@@ -18,6 +18,8 @@ final class OpenClawService: ObservableObject {
     @Published var debugInfo = ""
 
     var onAgentMessage: ((String) -> Void)?
+    /// Cumulative assistant text as it arrives, used for sentence-level streaming speech.
+    var onPartialResponse: ((String) -> Void)?
     var onProcessingChanged: ((Bool) -> Void)?
     var onToolStatusChanged: ((String?, Bool) -> Void)?
     var onToolCall: ((String, [String: Any], @escaping (String) -> Void) -> Void)?
@@ -67,6 +69,10 @@ final class OpenClawService: ObservableObject {
     private var accumulatedResponse = ""
     /// Run id returned by chat.send. Used to abort exactly the in-flight OpenClaw turn.
     private var activeRunId: String?
+
+    private enum PartialResponseSource { case agent, chat }
+    private var partialResponseSource: PartialResponseSource?
+    private var turnWatchdogTask: Task<Void, Never>?
 
     private static var sessionKey = "jarvis-\(UUID().uuidString.prefix(8))"
 
@@ -317,6 +323,8 @@ final class OpenClawService: ObservableObject {
 
         isProcessing = true
         accumulatedResponse = ""
+        partialResponseSource = nil
+        turnWatchdogTask?.cancel()
         onProcessingChanged?(true)
 
         var params: [String: Any] = [
@@ -340,6 +348,7 @@ final class OpenClawService: ObservableObject {
             throw AIBackendError.requestFailed(response.error?.message ?? "Message failed")
         }
         activeRunId = response.payload?["runId"]?.stringValue
+        startTurnWatchdog()
     }
 
     func cancelRequest() {
@@ -357,6 +366,8 @@ final class OpenClawService: ObservableObject {
     /// `run/cancel` with no session id; OpenClaw 2026.7.1 does not use that as the UI stop path,
     /// so the old turn could continue and collide with the replacement message.
     private func abortCurrentTurn() async {
+        turnWatchdogTask?.cancel()
+        turnWatchdogTask = nil
         guard connectionState.isUsable else { return }
         var params: [String: Any] = ["sessionKey": Self.sessionKey]
         if let activeRunId { params["runId"] = activeRunId }
@@ -369,8 +380,54 @@ final class OpenClawService: ObservableObject {
         isToolRunning = false
         currentToolName = nil
         accumulatedResponse = ""
+        partialResponseSource = nil
         onProcessingChanged?(false)
         onToolStatusChanged?(nil, false)
+    }
+
+    private func startTurnWatchdog() {
+        turnWatchdogTask?.cancel()
+        turnWatchdogTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 18_000_000_000)
+            } catch {
+                return
+            }
+            guard let self, self.isProcessing else { return }
+            let friendly = "O OpenClaw demorou demais para começar a responder. Interrompi esta tentativa para a conversa não ficar travada."
+            self.lastError = friendly
+            self.debugInfo = "OpenClaw first-response timeout"
+            DiagnosticLogger.shared.log("OpenClaw", "First response timeout after 18s; aborting turn")
+            await self.abortCurrentTurn()
+            self.onAgentMessage?(friendly)
+        }
+    }
+
+    private func noteTurnProgress() {
+        turnWatchdogTask?.cancel()
+        turnWatchdogTask = nil
+    }
+
+    private func appendPartial(_ text: String, source: PartialResponseSource) {
+        guard !text.isEmpty else { return }
+        noteTurnProgress()
+        if partialResponseSource == nil { partialResponseSource = source }
+        guard partialResponseSource == source else { return }
+        accumulatedResponse += text
+        onPartialResponse?(accumulatedResponse)
+    }
+
+    private func friendlyErrorMessage(for raw: String) -> String {
+        let lower = raw.lowercased()
+        if lower.contains("429") || lower.contains("quota") || lower.contains("rate limit") {
+            return "O OpenClaw atingiu o limite da IA configurada no computador. A conexão está funcionando, mas o provedor do OpenClaw precisa de cota disponível."
+        }
+        if lower.contains("session file changed while embedded prompt lock was released") {
+            Self.sessionKey = "jarvis-\(UUID().uuidString.prefix(8))"
+            debugInfo = "Recovered from OpenClaw session takeover race"
+            return "Houve um conflito interno de sessão no OpenClaw. A sessão já foi reiniciada; repita o comando."
+        }
+        return "O OpenClaw encontrou um erro ao responder. Tente novamente."
     }
 
     func sendToolResult(callId: String, result: String) async throws {
@@ -465,8 +522,9 @@ final class OpenClawService: ObservableObject {
             let stream = payload["stream"]?.stringValue ?? ""
             let data = payload["data"]?.dictionaryValue ?? [:]
             if stream == "assistant", let text = data["text"] as? String, !text.isEmpty {
-                accumulatedResponse += text
+                appendPartial(text, source: .agent)
             } else if stream == "tool" {
+                noteTurnProgress()
                 if let toolName = data["name"] as? String {
                     currentToolName = toolName
                     isToolRunning = true
@@ -491,38 +549,41 @@ final class OpenClawService: ObservableObject {
             let state = payload["state"]?.stringValue ?? ""
             switch state {
             case "delta":
-                appendTextBlocks(from: payload)
+                let text = textBlocks(from: payload)
+                if !text.isEmpty { appendPartial(text, source: .chat) }
             case "final":
+                turnWatchdogTask?.cancel()
+                turnWatchdogTask = nil
                 activeRunId = nil
                 isProcessing = false
-                onProcessingChanged?(false)
                 let finalText = textBlocks(from: payload)
                 let responseText = finalText.isEmpty ? accumulatedResponse : finalText
-                accumulatedResponse = ""
                 if !responseText.isEmpty { onAgentMessage?(responseText) }
+                accumulatedResponse = ""
+                partialResponseSource = nil
+                // Flush the final streamed utterance before VoiceAgent observes processing=false.
+                onProcessingChanged?(false)
             case "error":
+                turnWatchdogTask?.cancel()
+                turnWatchdogTask = nil
                 activeRunId = nil
                 isProcessing = false
-                onProcessingChanged?(false)
                 let message = payload["errorMessage"]?.stringValue ?? "OpenClaw error"
+                let friendly = friendlyErrorMessage(for: message)
+                lastError = friendly
+                DiagnosticLogger.shared.log("OpenClaw", "Provider error suppressed: \(message)")
                 accumulatedResponse = ""
-                if message.localizedCaseInsensitiveContains("session file changed while embedded prompt lock was released") {
-                    // Known OpenClaw 2026.7.1 session-fence race. Do not read a Windows file path
-                    // aloud; rotate the JARVIS session so the very next command starts cleanly.
-                    Self.sessionKey = "jarvis-\(UUID().uuidString.prefix(8))"
-                    let friendly = "Houve um conflito interno de sessão no OpenClaw. A sessão já foi reiniciada; repita o comando."
-                    lastError = friendly
-                    debugInfo = "Recovered from OpenClaw session takeover race"
-                    onAgentMessage?(friendly)
-                } else {
-                    lastError = message
-                    onAgentMessage?("OpenClaw error: \(message)")
-                }
+                partialResponseSource = nil
+                onAgentMessage?(friendly)
+                onProcessingChanged?(false)
             case "aborted":
+                turnWatchdogTask?.cancel()
+                turnWatchdogTask = nil
                 activeRunId = nil
                 isProcessing = false
-                onProcessingChanged?(false)
                 accumulatedResponse = ""
+                partialResponseSource = nil
+                onProcessingChanged?(false)
             default:
                 break
             }

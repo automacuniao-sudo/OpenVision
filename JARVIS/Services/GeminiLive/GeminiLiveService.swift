@@ -350,7 +350,9 @@ final class GeminiLiveService: ObservableObject {
 
     /// Send audio data to Gemini
     func sendAudio(data: Data) {
-        guard connectionState.isUsable, !isModelSpeaking else { return }
+        // Full duplex: server VAD needs microphone PCM even while the model is speaking so the
+        // user can interrupt naturally. `interrupted` already clears queued local playback.
+        guard connectionState.isUsable else { return }
 
         let message: [String: Any] = [
             "realtimeInput": [

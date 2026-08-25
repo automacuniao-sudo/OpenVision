@@ -22,6 +22,7 @@ final class VoiceAgentViewModel: ObservableObject {
     let geminiLive = GeminiLiveService.shared
     let openAIRealtime = OpenAIRealtimeService.shared
     let ttsService = TTSService.shared
+    let geminiStreamingTTS = GeminiStreamingTTSService.shared
     let soundService = SoundService.shared
     let audioCapture = AudioCaptureService()
     let audioPlayback = AudioPlaybackService()
@@ -59,6 +60,10 @@ final class VoiceAgentViewModel: ObservableObject {
     /// already been handed to the speech queue, and whether a streamed utterance is open.
     private var ttsStreamSpokenChars = 0
     private var ttsStreaming = false
+
+    private var isDirectGeminiVoiceMode = false
+    private var directGeminiAwaitingNewInput = true
+    private var directGeminiTimeoutTask: Task<Void, Never>?
 
     /// History: true after a user command was recorded, until its reply is recorded. Keeps
     /// system utterances ("Live video mode active", error prompts) out of the History tab.
@@ -306,15 +311,19 @@ final class VoiceAgentViewModel: ObservableObject {
                 userTranscript = ""
                 aiTranscript = ""
 
-                // Start voice command listening for speech capture
-                if voiceCommandService.authorizationStatus == .authorized {
-                    if !voiceCommandService.isListening {
-                        try? voiceCommandService.startListening()
-                    }
-                    // Put in listening mode (not waiting for wake word)
-                    voiceCommandService.enterConversationMode()
+                if settingsManager.settings.aiBackend == .geminiLive {
+                    // Normal Gemini voice is now true audio-to-audio after the local wake word.
+                    try startDirectGeminiVoiceMode()
                 } else {
-                    errorMessage = "Speech recognition not authorized"
+                    // Text backends keep Apple STT for command capture.
+                    if voiceCommandService.authorizationStatus == .authorized {
+                        if !voiceCommandService.isListening {
+                            try? voiceCommandService.startListening()
+                        }
+                        voiceCommandService.enterConversationMode()
+                    } else {
+                        errorMessage = "Speech recognition not authorized"
+                    }
                 }
 
             } catch {
@@ -330,7 +339,103 @@ final class VoiceAgentViewModel: ObservableObject {
     /// would force a fresh Bluetooth HFP negotiation the glasses can't service right after
     /// streaming, leaving the mic deaf). Conversation mode's silence timeout then returns to idle.
     private func resumeListeningAfterSpeaking() {
-        voiceCommandService.enterConversationMode()
+        if isDirectGeminiVoiceMode {
+            armDirectGeminiConversationTimeout()
+        } else {
+            voiceCommandService.enterConversationMode()
+        }
+    }
+
+    private func startDirectGeminiVoiceMode() throws {
+        directGeminiTimeoutTask?.cancel()
+        directGeminiAwaitingNewInput = true
+
+        if voiceCommandService.isListening {
+            voiceCommandService.stopListening()
+        }
+
+        audioCapture.onAudioCaptured = { [weak self] data in
+            self?.geminiLive.sendAudio(data: data)
+        }
+
+        do {
+            try audioCapture.startCapture()
+            isDirectGeminiVoiceMode = true
+            DiagnosticLogger.shared.log("Gemini", "Direct microphone PCM streaming active")
+            armDirectGeminiConversationTimeout()
+        } catch {
+            audioCapture.onAudioCaptured = nil
+            isDirectGeminiVoiceMode = false
+            if settingsManager.settings.wakeWordEnabled,
+               voiceCommandService.authorizationStatus == .authorized,
+               !voiceCommandService.isListening {
+                try? voiceCommandService.startListening()
+            }
+            throw error
+        }
+    }
+
+    private func stopDirectGeminiVoiceMode() {
+        directGeminiTimeoutTask?.cancel()
+        directGeminiTimeoutTask = nil
+        guard isDirectGeminiVoiceMode || audioCapture.isCapturing else { return }
+        audioCapture.stopCapture()
+        audioCapture.onAudioCaptured = nil
+        isDirectGeminiVoiceMode = false
+        directGeminiAwaitingNewInput = true
+        DiagnosticLogger.shared.log("Gemini", "Direct microphone PCM streaming stopped")
+    }
+
+    private func armDirectGeminiConversationTimeout() {
+        directGeminiTimeoutTask?.cancel()
+        directGeminiTimeoutTask = nil
+        let timeout = settingsManager.settings.conversationTimeout
+        guard timeout > 0, isDirectGeminiVoiceMode, isSessionActive else { return }
+
+        directGeminiTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard let self, self.isDirectGeminiVoiceMode, self.isSessionActive else { return }
+            if self.geminiLive.isModelSpeaking || self.geminiLive.isProcessing {
+                self.armDirectGeminiConversationTimeout()
+                return
+            }
+            DiagnosticLogger.shared.log("Voice", "Direct Gemini conversation timeout fired")
+            self.stopSession()
+        }
+        DiagnosticLogger.shared.log("Voice", "Direct Gemini conversation auto-end armed for \(Int(timeout))s")
+    }
+
+    private var shouldUseGeminiStreamingVoiceForOpenClaw: Bool {
+        settingsManager.settings.aiBackend == .openClaw
+            && !settingsManager.settings.geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func beginActiveStreamingTTS() {
+        if shouldUseGeminiStreamingVoiceForOpenClaw {
+            geminiStreamingTTS.beginStreaming()
+        } else {
+            ttsService.beginStreaming()
+        }
+    }
+
+    private func speakActiveStreamingChunk(_ text: String) {
+        if shouldUseGeminiStreamingVoiceForOpenClaw {
+            geminiStreamingTTS.speakChunk(text)
+        } else {
+            ttsService.speakChunk(text)
+        }
+    }
+
+    private func endActiveStreamingTTS() {
+        if shouldUseGeminiStreamingVoiceForOpenClaw {
+            geminiStreamingTTS.endStreaming()
+        } else {
+            ttsService.endStreaming()
+        }
     }
 
     /// Apply the preferred audio route: the glasses' Bluetooth mic + speaker when the user wants it
@@ -388,6 +493,9 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     func stopSession() {
+        let wasDirectGeminiVoice = isDirectGeminiVoiceMode
+        if wasDirectGeminiVoice { stopDirectGeminiVoiceMode() }
+
         // If in live video mode, stop it first
         if isLiveVideoMode {
             Task {
@@ -420,6 +528,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
         // Stop any ongoing TTS
         ttsService.stop()
+        geminiStreamingTTS.stop()
         KokoroTTSService.shared.stop()
 
         // Set session inactive FIRST to prevent callbacks from processing
@@ -428,8 +537,13 @@ final class VoiceAgentViewModel: ObservableObject {
 
         // Handle voice command service based on wake word setting
         if settingsManager.settings.wakeWordEnabled {
-            // Exit conversation mode but keep listening for wake word
-            voiceCommandService.exitConversationMode()
+            if wasDirectGeminiVoice {
+                if voiceCommandService.authorizationStatus == .authorized && !voiceCommandService.isListening {
+                    startWakeWordListening()
+                }
+            } else {
+                voiceCommandService.exitConversationMode()
+            }
         } else {
             // Wake word disabled - stop listening entirely to prevent
             // processing speech after session ends
@@ -445,7 +559,10 @@ final class VoiceAgentViewModel: ObservableObject {
     /// quiet back to wake-word listening. The recognizer buffer is already reset by
     /// VoiceCommandService (so the stale transcript can't re-fire); here we just halt + end the turn.
     private func performFullStop() {
+        let wasDirectGeminiVoice = isDirectGeminiVoiceMode
+        if wasDirectGeminiVoice { stopDirectGeminiVoiceMode() }
         ttsService.stop()
+        geminiStreamingTTS.stop()
         KokoroTTSService.shared.stop()
         audioPlayback.stop()
         ttsStreaming = false
@@ -470,6 +587,13 @@ final class VoiceAgentViewModel: ObservableObject {
         currentToolName = nil
         isSessionActive = false
         agentState = .idle
+
+        if wasDirectGeminiVoice,
+           settingsManager.settings.wakeWordEnabled,
+           voiceCommandService.authorizationStatus == .authorized,
+           !voiceCommandService.isListening {
+            startWakeWordListening()
+        }
     }
 
     // MARK: - Voice Command Setup
@@ -512,6 +636,7 @@ final class VoiceAgentViewModel: ObservableObject {
         voiceCommandService.shouldAllowInterrupt = { [weak self] in
             guard let self else { return false }
             return self.ttsService.isSpeaking
+                || self.geminiStreamingTTS.isSpeaking
                 || KokoroTTSService.shared.isSpeaking
                 || GeminiLiveService.shared.isModelSpeaking
                 || GeminiLiveService.shared.isProcessing
@@ -529,6 +654,7 @@ final class VoiceAgentViewModel: ObservableObject {
             if self.ttsService.isSpeaking {
                 print("[VoiceAgent] Stopping TTS due to wake word interrupt")
                 self.ttsService.stop()
+                self.geminiStreamingTTS.stop()
                 self.ttsStreaming = false   // keep flag in sync with the cleared stream
                 KokoroTTSService.shared.stop()
                 self.audioPlayback.stop()
@@ -592,6 +718,7 @@ final class VoiceAgentViewModel: ObservableObject {
             // Stop every local output path immediately. Gemini normal voice uses its own
             // fallback player, which is stopped by GeminiLiveService.interrupt() below.
             self.ttsService.stop()
+            self.geminiStreamingTTS.stop()
             KokoroTTSService.shared.stop()
             self.audioPlayback.stop()
 
@@ -664,7 +791,7 @@ final class VoiceAgentViewModel: ObservableObject {
                     // close it here so streamingActive/isSpeaking don't stick true and freeze the
                     // wake-word listener (queued sentences still drain and reset isSpeaking).
                     if self.ttsStreaming {
-                        self.ttsService.endStreaming()
+                        self.endActiveStreamingTTS()
                         self.ttsStreaming = false
                     }
                     if self.agentState == .thinking && !self.ttsService.isSpeaking {
@@ -686,6 +813,30 @@ final class VoiceAgentViewModel: ObservableObject {
             // behind generation) instead of waiting for the whole reply. Big perceived speedup,
             // and Apple TTS isn't on the GPU so it doesn't fight the on-device model.
             if self.usingAppleTTS { self.feedStreamingSpeech(partial, isFinal: false) }
+        }
+
+        // OpenClaw partial text is a cumulative snapshot. Speak completed sentences while
+        // generation is still running instead of waiting for the final response.
+        OpenClawService.shared.onPartialResponse = { [weak self] (partial: String) in
+            guard let self, self.isSessionActive else { return }
+            self.aiTranscript = partial
+            self.feedStreamingSpeech(partial, isFinal: false)
+        }
+
+        geminiStreamingTTS.onSpeechStarted = { [weak self] in
+            guard let self else { return }
+            self.agentState = .speaking
+            self.voiceCommandService.isBargeInPaused = true
+        }
+        geminiStreamingTTS.onSpeechEnded = { [weak self] in
+            guard let self else { return }
+            self.voiceCommandService.isBargeInPaused = false
+            if self.isSessionActive {
+                self.agentState = .listening
+                self.resumeListeningAfterSpeaking()
+            } else {
+                self.agentState = .idle
+            }
         }
 
         // OpenClaw extras: tool status + device-side tool calls.
@@ -722,7 +873,20 @@ final class VoiceAgentViewModel: ObservableObject {
             }
         }
 
-        // Gemini Live callbacks (for Gemini Live mode, not hybrid)
+        // Gemini Live callbacks. Normal voice also uses them in direct PCM mode.
+        GeminiLiveService.shared.onInputTranscription = { [weak self] (text: String) in
+            guard let self, self.isDirectGeminiVoiceMode else { return }
+            self.directGeminiTimeoutTask?.cancel()
+            self.directGeminiTimeoutTask = nil
+            if self.directGeminiAwaitingNewInput {
+                self.userTranscript = ""
+                self.aiTranscript = ""
+                self.historyLastLiveReply = ""
+                self.directGeminiAwaitingNewInput = false
+            }
+            self.userTranscript += text
+        }
+
         GeminiLiveService.shared.onOutputTranscription = { [weak self] (text: String) in
             guard let self else { return }
             // Gemini sends outputAudioTranscription incrementally (often word/phrase fragments).
@@ -739,9 +903,14 @@ final class VoiceAgentViewModel: ObservableObject {
                 return
             }
             self.agentState = self.isLiveVideoMode ? .liveVideo : .listening
-            self.voiceCommandService.enterConversationMode()
             // History: persist this Gemini Live exchange (transcript only, no frames).
             self.recordLiveTurn()
+            if self.isDirectGeminiVoiceMode {
+                self.directGeminiAwaitingNewInput = true
+                self.armDirectGeminiConversationTimeout()
+            } else {
+                self.voiceCommandService.enterConversationMode()
+            }
         }
     }
 
@@ -922,6 +1091,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
         // Stop TTS if speaking
         ttsService.stop()
+        geminiStreamingTTS.stop()
         KokoroTTSService.shared.stop()
 
         // Match the audio pipeline to the backend's sample rates (Gemini 16k in / 24k out,
@@ -1596,7 +1766,7 @@ final class VoiceAgentViewModel: ObservableObject {
             guard !cumulative.isEmpty else { return }
             ttsStreaming = true
             ttsStreamSpokenChars = 0
-            ttsService.beginStreaming()
+            beginActiveStreamingTTS()
         }
 
         // The portion not yet handed to the speech queue.
@@ -1606,9 +1776,9 @@ final class VoiceAgentViewModel: ObservableObject {
 
         if isFinal {
             let tail = pending.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !tail.isEmpty { ttsService.speakChunk(tail) }
+            if !tail.isEmpty { speakActiveStreamingChunk(tail) }
             ttsStreamSpokenChars = cumulative.count
-            ttsService.endStreaming()
+            endActiveStreamingTTS()
             ttsStreaming = false
             recordAssistantReply(cumulative)   // history: streamed reply is complete
             return
@@ -1619,7 +1789,7 @@ final class VoiceAgentViewModel: ObservableObject {
         let pendingStr = String(pending)
         let sentence = String(pendingStr[..<boundary]).trimmingCharacters(in: .whitespacesAndNewlines)
         guard sentence.count >= 2 else { return }   // don't voice a stray "." or "?"
-        ttsService.speakChunk(sentence)
+        speakActiveStreamingChunk(sentence)
         ttsStreamSpokenChars += pendingStr.distance(from: pendingStr.startIndex, to: boundary)
     }
 
@@ -1627,8 +1797,10 @@ final class VoiceAgentViewModel: ObservableObject {
     private func speakResponse(_ text: String) {
         guard !text.isEmpty else { return }
         recordAssistantReply(text)
-        // Kokoro (on-device neural) when selected + ready; otherwise the Apple system voice.
-        if settingsManager.settings.ttsEngine == .kokoro && KokoroTTSService.shared.isModelReady {
+        if shouldUseGeminiStreamingVoiceForOpenClaw {
+            // Same configured Google voice as Gemini Live (Charon by default).
+            geminiStreamingTTS.speak(text)
+        } else if settingsManager.settings.ttsEngine == .kokoro && KokoroTTSService.shared.isModelReady {
             Task { await KokoroTTSService.shared.speak(text, voice: settingsManager.settings.kokoroVoice) }
         } else {
             ttsService.speak(text)

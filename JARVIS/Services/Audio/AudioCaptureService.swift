@@ -59,13 +59,32 @@ final class AudioCaptureService: ObservableObject {
             throw AudioCaptureError.inputNodeUnavailable
         }
 
-        // Get native format
+        // Voice-processing input keeps speaker echo out of the continuous Gemini stream.
+        if AudioSessionManager.shared.isUsingBuiltInMic {
+            do {
+                try inputNode.setVoiceProcessingEnabled(true)
+                inputNode.voiceProcessingOtherAudioDuckingConfiguration =
+                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+                        enableAdvancedDucking: ObjCBool(true),
+                        duckingLevel: .min
+                    )
+                DiagnosticLogger.shared.log("Audio", "Direct stream voice processing enabled (AEC)")
+            } catch {
+                DiagnosticLogger.shared.log("Audio", "Direct stream AEC unavailable: \(error.localizedDescription)")
+            }
+        }
+
         let nativeFormat = inputNode.outputFormat(forBus: 0)
         print("[AudioCapture] Native format: \(nativeFormat)")
 
-        // Install tap in native format
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buffer, _ in
-            self?.processAudioBuffer(buffer, nativeFormat: nativeFormat)
+        if let reason = OVCatchException({
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buffer, _ in
+                self?.processAudioBuffer(buffer, nativeFormat: nativeFormat)
+            }
+        }) {
+            self.audioEngine = nil
+            self.inputNode = nil
+            throw AudioCaptureError.tapInstallationFailed(reason)
         }
 
         try engine.start()
@@ -77,7 +96,13 @@ final class AudioCaptureService: ObservableObject {
     func stopCapture() {
         guard isCapturing else { return }
 
-        inputNode?.removeTap(onBus: 0)
+        if let inputNode {
+            if let reason = OVCatchException({
+                inputNode.removeTap(onBus: 0)
+            }) {
+                DiagnosticLogger.shared.log("Audio", "Direct stream removeTap ignored: \(reason)")
+            }
+        }
         audioEngine?.stop()
         audioEngine = nil
         inputNode = nil
@@ -209,11 +234,13 @@ final class AudioCaptureService: ObservableObject {
 enum AudioCaptureError: LocalizedError {
     case engineCreationFailed
     case inputNodeUnavailable
+    case tapInstallationFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .engineCreationFailed: return "Failed to create audio engine"
         case .inputNodeUnavailable: return "Audio input node unavailable"
+        case .tapInstallationFailed(let reason): return "Failed to install audio capture tap: \(reason)"
         }
     }
 }

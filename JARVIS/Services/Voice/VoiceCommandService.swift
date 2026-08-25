@@ -92,6 +92,27 @@ final class VoiceCommandService: ObservableObject {
         return values
     }
 
+    /// Some AVAudio/Speech calls raise Objective-C NSException instead of Swift Error.
+    /// Rapid recognizer restarts can otherwise terminate the process with SIGABRT.
+    private func removeTapSafely(from inputNode: AVAudioInputNode, context: String) {
+        if let reason = OVCatchException({
+            inputNode.removeTap(onBus: 0)
+        }) {
+            DiagnosticLogger.shared.log("Voice", "removeTap ignored [\(context)]: \(reason)")
+        }
+    }
+
+    private nonisolated func appendSafely(
+        _ buffer: AVAudioPCMBuffer,
+        to request: SFSpeechAudioBufferRecognitionRequest
+    ) {
+        if let reason = OVCatchException({
+            request.append(buffer)
+        }) {
+            DiagnosticLogger.shared.log("Voice", "Speech append exception suppressed: \(reason)")
+        }
+    }
+
     private func setupSpeechDetector() {
         speechDetector.onSpeechStart = { [weak self] in
             guard let self else { return }
@@ -177,7 +198,7 @@ final class VoiceCommandService: ObservableObject {
             }
         }
 
-        inputNode.removeTap(onBus: 0)
+        removeTapSafely(from: inputNode, context: "startListening preinstall")
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
             print("[VoiceCommand] Input unavailable (format \(recordingFormat.sampleRate)Hz/\(recordingFormat.channelCount)ch)")
@@ -188,8 +209,8 @@ final class VoiceCommandService: ObservableObject {
 
         let detector = speechDetector
         if let reason = OVCatchException({
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-                recognitionRequest.append(buffer)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
+                self?.appendSafely(buffer, to: recognitionRequest)
                 detector.feed(buffer)
             }
         }) {
@@ -204,7 +225,7 @@ final class VoiceCommandService: ObservableObject {
             try audioEngine.start()
         } catch {
             print("[VoiceCommand] Failed to start audio engine: \(error)")
-            audioEngine.inputNode.removeTap(onBus: 0)
+            removeTapSafely(from: audioEngine.inputNode, context: "startListening start failure")
             self.recognitionRequest = nil
             self.audioEngine = nil
             throw VoiceCommandError.audioEngineUnavailable
@@ -273,7 +294,9 @@ final class VoiceCommandService: ObservableObject {
         recognitionRequest?.endAudio()
         recognitionRequest = nil
 
-        audioEngine?.inputNode.removeTap(onBus: 0)
+        if let inputNode = audioEngine?.inputNode {
+            removeTapSafely(from: inputNode, context: "stopListening")
+        }
         audioEngine?.stop()
         audioEngine = nil
 
@@ -310,13 +333,19 @@ final class VoiceCommandService: ObservableObject {
     private func restartRecognition() {
         guard isListening else { return }
 
+        // Count every direct restart too. Previously a scheduled recognizer restart could fire
+        // immediately after a state-driven restart and churn the audio tap twice.
+        lastRecognizerRestart = Date()
+
         recognitionGeneration += 1
         recognitionTask?.cancel()
         recognitionTask = nil
         recognitionRequest?.endAudio()
         recognitionRequest = nil
 
-        audioEngine?.inputNode.removeTap(onBus: 0)
+        if let inputNode = audioEngine?.inputNode {
+            removeTapSafely(from: inputNode, context: "restartRecognition teardown")
+        }
 
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest else { return }
@@ -334,7 +363,7 @@ final class VoiceCommandService: ObservableObject {
         }
 
         let inputNode = audioEngine.inputNode
-        inputNode.removeTap(onBus: 0)
+        // The old restart path removed the same tap twice. The safe teardown above is enough.
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         guard recordingFormat.sampleRate > 0, recordingFormat.channelCount > 0 else {
             print("[VoiceCommand] Input unavailable on reinstall — skipping tap")
@@ -345,8 +374,8 @@ final class VoiceCommandService: ObservableObject {
         speechDetector.reset()
         let detector = speechDetector
         if let reason = OVCatchException({
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-                recognitionRequest.append(buffer)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
+                self?.appendSafely(buffer, to: recognitionRequest)
                 detector.feed(buffer)
             }
         }) {
