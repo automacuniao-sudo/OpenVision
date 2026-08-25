@@ -1,32 +1,26 @@
-// OpenVision - VoiceCommandService.swift
+// JARVIS - VoiceCommandService.swift
 // Wake word detection and voice command capture using Apple Speech Recognition
 
 import Foundation
 import Speech
 import AVFoundation
 
-/// Voice command service with wake word detection
+/// Voice command service for JARVIS.
 ///
 /// Features:
-/// - Wake word detection ("Ok Vision" / configured wake word)
+/// - JARVIS-only wake word detection ("Ok Jarvis" / configured wake word)
 /// - Command capture after wake word
 /// - Acoustic VAD end-of-turn with adaptive timer fallback
 /// - Conversation mode (follow-ups without wake word)
 /// - Barge-in support, including while the backend is thinking
 @MainActor
 final class VoiceCommandService: ObservableObject {
-    // MARK: - Singleton
-
     static let shared = VoiceCommandService()
-
-    // MARK: - Published State
 
     @Published var state: ListeningState = .idle
     @Published var isListening: Bool = false
     @Published var currentTranscription: String = ""
     @Published var authorizationStatus: SFSpeechRecognizerAuthorizationStatus = .notDetermined
-
-    // MARK: - Listening State
 
     enum ListeningState: Equatable {
         case idle
@@ -34,8 +28,6 @@ final class VoiceCommandService: ObservableObject {
         case conversationMode
         case processing
     }
-
-    // MARK: - Configuration
 
     var wakeWord: String {
         SettingsManager.shared.settings.wakeWord
@@ -49,15 +41,11 @@ final class VoiceCommandService: ObservableObject {
         SettingsManager.shared.settings.playActivationSound
     }
 
-    // MARK: - Callbacks
-
     var onWakeWordDetected: (() -> Void)?
     var onStopCommand: (() -> Void)?
     var onCommandCaptured: ((String) -> Void)?
     var onInterruption: (() -> Void)?
     var onConversationTimeout: (() -> Void)?
-
-    // MARK: - Barge-in Control
 
     /// True while reply audio is actually audible. During audible output interruption matching is
     /// deliberately conservative to reject speaker echo; while thinking silently, any new user
@@ -67,49 +55,46 @@ final class VoiceCommandService: ObservableObject {
     /// Returns true when the current backend can be interrupted (speaking OR processing/thinking).
     var shouldAllowInterrupt: (() -> Bool)?
 
-    // MARK: - Speech Recognition
-
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "pt-BR"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private var recognitionGeneration = 0
-
-    // MARK: - Audio Engine
 
     private var audioEngine: AVAudioEngine?
     private var lastRecognizerRestart = Date.distantPast
     private var wakeWordRestartScheduled = false
     private let minRestartInterval: TimeInterval = 0.6
 
-    // MARK: - Timers
-
     private var silenceTimer: Timer?
     private var commandTimeoutTimer: Timer?
     private var conversationTimeoutTimer: Timer?
     private var wakeWordCooldownActive: Bool = false
 
-    // MARK: - Acoustic VAD
-
     /// Silero VAD via FluidAudio. When available, this is the primary end-of-turn signal.
     private let speechDetector = SpeechActivityDetector()
     private var vadCommitPending = false
-
-    /// Tracks if user has started speaking in this turn.
     private var hasSpokenThisTurn: Bool = false
-
-    /// Timestamp of the most recent non-empty Apple Speech partial for diagnostics.
     private var lastSpeechRecognitionUpdateAt: Date?
-
-    // MARK: - Initialization
 
     private init() {
         setupSpeechDetector()
     }
 
+    /// Product-specific phrases accepted by this branch. Intentionally contains no Vision aliases,
+    /// so the upstream OpenVision app and Project JARVIS remain behaviorally separate.
+    private var jarvisWakeVariants: [String] {
+        var values = [
+            wakeWord.lowercased(),
+            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis"
+        ]
+        var seen = Set<String>()
+        values = values.filter { !$0.isEmpty && seen.insert($0).inserted }
+        return values
+    }
+
     private func setupSpeechDetector() {
         speechDetector.onSpeechStart = { [weak self] in
             guard let self else { return }
-            // A pause inside a sentence is not end-of-turn. Cancel any pending VAD commit.
             self.vadCommitPending = false
             self.silenceTimer?.invalidate()
             self.silenceTimer = nil
@@ -124,8 +109,6 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    /// Real acoustic speech end. Silero already applies silence hysteresis, so only a very small
-    /// grace is needed for Apple's final transcript partial to catch up with the audio stream.
     private func handleSpeechEnded() {
         guard state == .listening || state == .conversationMode else { return }
         guard hasSpokenThisTurn, !currentTranscription.isEmpty else { return }
@@ -149,8 +132,6 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    // MARK: - Authorization
-
     func requestAuthorization() async -> Bool {
         return await withCheckedContinuation { continuation in
             SFSpeechRecognizer.requestAuthorization { status in
@@ -161,8 +142,6 @@ final class VoiceCommandService: ObservableObject {
             }
         }
     }
-
-    // MARK: - Start/Stop
 
     func startListening() throws {
         guard authorizationStatus == .authorized else {
@@ -181,8 +160,6 @@ final class VoiceCommandService: ObservableObject {
         }
         configureRecognitionRequest(recognitionRequest)
 
-        // On the built-in mic, enable Apple's voice-processing/AEC before the engine starts so
-        // reply audio is removed from the microphone signal as much as iOS allows.
         let inputNode = audioEngine.inputNode
         if AudioSessionManager.shared.isUsingBuiltInMic {
             do {
@@ -258,12 +235,9 @@ final class VoiceCommandService: ObservableObject {
             request.requiresOnDeviceRecognition = true
         }
         request.taskHint = state == .idle ? .search : .dictation
-        var phrases = [
-            "Ok Jarvis", "Okay Jarvis", "Hey Jarvis", "Jarvis",
-            "Ok Vision", "Okay Vision", "Hey Vision", "Vision"
-        ]
-        if !wakeWord.isEmpty { phrases.insert(wakeWord, at: 0) }
-        request.contextualStrings = phrases
+        request.contextualStrings = jarvisWakeVariants.map { variant in
+            variant.split(separator: " ").map { $0.capitalized }.joined(separator: " ")
+        }
     }
 
     private func restartIfRecognizerEnded(result: SFSpeechRecognitionResult?, error: Error?) {
@@ -368,7 +342,6 @@ final class VoiceCommandService: ObservableObject {
             return
         }
 
-        // The input format can change after phone <-> Bluetooth route transitions.
         speechDetector.reset()
         let detector = speechDetector
         if let reason = OVCatchException({
@@ -438,8 +411,6 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    // MARK: - Recognition Handling
-
     private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {
         guard isListening else {
             print("[VoiceCommand] Ignoring result - not listening")
@@ -469,12 +440,8 @@ final class VoiceCommandService: ObservableObject {
 
         case .listening, .conversationMode:
             var command = transcription
-            for ww in [
-                wakeWord.lowercased(),
-                "ok jarvis", "okay jarvis", "hey jarvis", "jarvis",
-                "ok vision", "okay vision", "hey vision", "hi vision"
-            ] {
-                if let range = command.lowercased().range(of: ww) {
+            for phrase in jarvisWakeVariants {
+                if let range = command.lowercased().range(of: phrase) {
                     command = String(command[range.upperBound...]).trimmingCharacters(in: .whitespaces)
                     break
                 }
@@ -490,7 +457,6 @@ final class VoiceCommandService: ObservableObject {
                 conversationTimeoutTimer?.invalidate()
             }
 
-            // No-op when VAD is active; adaptive text endpointing remains the soft fallback.
             resetSilenceTimer()
 
             if result.isFinal && !command.isEmpty {
@@ -514,11 +480,8 @@ final class VoiceCommandService: ObservableObject {
                 return
             }
 
-            // Two regimes:
-            // - AUDIBLE reply: require JARVIS/wake prefix at the start to defend against speaker echo.
-            // - SILENT thinking/tool processing: there is no assistant audio to echo, and the
-            //   recognizer buffer was cleared when the previous command committed. Any new speech
-            //   is therefore a legitimate replacement turn, even without repeating "Jarvis".
+            // Audible reply requires a JARVIS prefix to avoid speaker echo. While the backend is
+            // silently thinking/tool-running, fresh speech can replace the in-flight turn directly.
             let replacement: String
             if isBargeInPaused {
                 guard interruptPrefixAtStart(transcription) != nil else { return }
@@ -555,8 +518,6 @@ final class VoiceCommandService: ObservableObject {
         }
     }
 
-    // MARK: - Barge-in helpers
-
     private func isStopPhrase(_ text: String) -> Bool {
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
         if lower.contains("video") || lower.contains("stream") { return false }
@@ -590,15 +551,10 @@ final class VoiceCommandService: ObservableObject {
         let lower = trimmed.lowercased()
         let lowerNSString = lower as NSString
         let originalNSString = trimmed as NSString
-        let prefixes = [
-            wakeWord.lowercased(),
-            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
-            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"
-        ]
 
         var bestLocation = NSNotFound
         var bestLength = 0
-        for prefix in prefixes where !prefix.isEmpty {
+        for prefix in jarvisWakeVariants {
             let range = lowerNSString.range(of: prefix, options: .backwards)
             if range.location != NSNotFound && (bestLocation == NSNotFound || range.location > bestLocation) {
                 bestLocation = range.location
@@ -616,23 +572,13 @@ final class VoiceCommandService: ObservableObject {
 
     private func interruptPrefixAtStart(_ text: String) -> String? {
         let lower = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let prefixes = [
-            wakeWord.lowercased(),
-            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
-            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"
-        ]
-        return prefixes.first { !$0.isEmpty && lower.hasPrefix($0) }
+        return jarvisWakeVariants.first { lower.hasPrefix($0) }
     }
 
     private func extractCommandAfterInterruptPrefix(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let lower = trimmed.lowercased()
-        let prefixes = [
-            wakeWord.lowercased(),
-            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
-            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"
-        ]
-        for prefix in prefixes where !prefix.isEmpty && lower.hasPrefix(prefix) {
+        for prefix in jarvisWakeVariants where lower.hasPrefix(prefix) {
             let index = trimmed.index(trimmed.startIndex, offsetBy: min(prefix.count, trimmed.count))
             return String(trimmed[index...])
                 .trimmingCharacters(in: CharacterSet(charactersIn: " ,.:;!?-–—"))
@@ -642,12 +588,7 @@ final class VoiceCommandService: ObservableObject {
 
     private func wakeWordAtStart(_ text: String) -> Bool {
         let lower = text.lowercased()
-        let variations = [
-            wakeWord.lowercased(),
-            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
-            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision"
-        ]
-        for variation in variations {
+        for variation in jarvisWakeVariants {
             if let range = lower.range(of: variation),
                lower.distance(from: lower.startIndex, to: range.lowerBound) <= 12 {
                 return true
@@ -658,33 +599,17 @@ final class VoiceCommandService: ObservableObject {
 
     private func detectWakeWord(in text: String, bypassCooldown: Bool = false) -> Bool {
         guard bypassCooldown || !wakeWordCooldownActive else { return false }
-
         let lowercased = text.lowercased()
-        let wakeWordLower = wakeWord.lowercased()
-        let variations = [
-            wakeWordLower,
-            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis",
-            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision",
-            "a vision", "heavy vision", "have vision", "obey vision", "oak vision"
-        ]
-
-        let detected = variations.contains { !$0.isEmpty && lowercased.contains($0) }
+        let detected = jarvisWakeVariants.contains { lowercased.contains($0) }
         if detected {
-            print("[VoiceCommand] Detected wake word in: '\(text)'")
+            print("[VoiceCommand] Detected JARVIS wake word in: '\(text)'")
         }
         return detected
     }
 
     private func extractCommandAfterWakeWord(_ text: String) -> String {
         let lowercased = text.lowercased()
-        let variations = [
-            wakeWord.lowercased(),
-            "ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis", "jarvis",
-            "ok vision", "okay vision", "o.k. vision", "o k vision", "hey vision", "hi vision",
-            "a vision", "heavy vision", "have vision", "obey vision", "oak vision"
-        ]
-
-        for variation in variations where !variation.isEmpty {
+        for variation in jarvisWakeVariants {
             if let range = lowercased.range(of: variation) {
                 return String(text[range.upperBound...])
                     .trimmingCharacters(in: .whitespaces)
@@ -693,10 +618,8 @@ final class VoiceCommandService: ObservableObject {
         return ""
     }
 
-    // MARK: - Wake / command completion
-
     private func handleWakeWordDetected() {
-        print("[VoiceCommand] Wake word detected!")
+        print("[VoiceCommand] JARVIS wake word detected!")
         DiagnosticLogger.shared.log("Voice", "Wake word detected: \(wakeWord)")
 
         wakeWordCooldownActive = true
@@ -715,16 +638,9 @@ final class VoiceCommandService: ObservableObject {
 
     private func handleCommandComplete(_ text: String) {
         var command = text
-        let wakeWordLower = wakeWord.lowercased()
-
-        for prefix in [
-            wakeWordLower, "ok jarvis", "okay jarvis", "hey jarvis", "jarvis",
-            "hey vision", "ok vision", "okay vision"
-        ] {
-            if command.lowercased().hasPrefix(prefix) {
-                command = String(command.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
-                break
-            }
+        for prefix in jarvisWakeVariants where command.lowercased().hasPrefix(prefix) {
+            command = String(command.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces)
+            break
         }
 
         guard !command.isEmpty else { return }
@@ -747,13 +663,9 @@ final class VoiceCommandService: ObservableObject {
         commandTimeoutTimer = nil
         currentTranscription = ""
 
-        // Clear Apple's accumulated recognition buffer before entering processing so anything
-        // heard during thinking is a genuinely new utterance rather than the previous command tail.
         restartRecognition()
         onCommandCaptured?(command)
     }
-
-    // MARK: - Timers
 
     /// Fallback endpointing only. When acoustic VAD is healthy, speechEnd owns turn commit.
     private func resetSilenceTimer() {

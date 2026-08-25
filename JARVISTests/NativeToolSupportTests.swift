@@ -1,16 +1,10 @@
-// OpenVision - NativeToolSupportTests.swift
-// The date-resolution logic behind "remind me at 6 PM" landing at exactly 6:00 PM.
+// JARVIS - NativeToolSupportTests.swift
 
 import XCTest
-@testable import OpenVision
+@testable import JARVIS
 
 final class NativeToolSupportTests: XCTestCase {
-
-    // MARK: - resolveDate: clock-time path
-
     func testClockTimeFutureTodayResolvesToday() {
-        // Pick a time guaranteed to still be in the future today (or roll to tomorrow — both
-        // asserted below by re-deriving from the same calendar rules).
         let cal = Calendar.current
         let now = Date()
         let hour = 23, minute = 59
@@ -19,17 +13,16 @@ final class NativeToolSupportTests: XCTestCase {
         let comps = cal.dateComponents([.hour, .minute], from: date!)
         XCTAssertEqual(comps.hour, hour)
         XCTAssertEqual(comps.minute, minute)
-        XCTAssertGreaterThan(date!, now, "clock-time resolution must never land in the past")
+        XCTAssertGreaterThan(date!, now)
     }
 
     func testClockTimeAlreadyPassedRollsToTomorrow() {
         let cal = Calendar.current
         let now = Date()
-        // One hour ago (wrapping at midnight) has always already passed today.
         let pastHour = (cal.component(.hour, from: now) + 23) % 24
         let date = NativeToolSupport.resolveDate(from: ["hour": pastHour, "minute": 0])
         XCTAssertNotNil(date)
-        XCTAssertGreaterThan(date!, now, "a passed clock time must roll to the next occurrence")
+        XCTAssertGreaterThan(date!, now)
         XCTAssertEqual(cal.component(.hour, from: date!), pastHour)
     }
 
@@ -43,14 +36,11 @@ final class NativeToolSupportTests: XCTestCase {
     }
 
     func testClockTimeBeatsRelativeWhenBothPresent() {
-        // Priority: absolute clock time wins over minutes_from_now.
         let cal = Calendar.current
         let date = NativeToolSupport.resolveDate(from: ["hour": 18, "minutes_from_now": 240])
         XCTAssertNotNil(date)
         XCTAssertEqual(cal.component(.hour, from: date!), 18)
     }
-
-    // MARK: - resolveDate: relative path
 
     func testMinutesFromNow() {
         let now = Date()
@@ -60,14 +50,11 @@ final class NativeToolSupportTests: XCTestCase {
     }
 
     func testMinutesFromNowAsStringCoerces() {
-        // LLMs send numbers as strings; int() must coerce.
         let now = Date()
         let date = NativeToolSupport.resolveDate(from: ["minutes_from_now": "15"])
         XCTAssertNotNil(date)
         XCTAssertEqual(date!.timeIntervalSince(now), 15 * 60, accuracy: 5)
     }
-
-    // MARK: - resolveDate: ISO fallback + nil
 
     func testISOFallback() {
         let date = NativeToolSupport.resolveDate(from: ["due_iso8601": "2030-01-02T09:00:00Z"])
@@ -82,11 +69,8 @@ final class NativeToolSupportTests: XCTestCase {
     }
 
     func testInvalidHourIgnored() {
-        // hour out of range → falls through (nil here, since nothing else is present).
         XCTAssertNil(NativeToolSupport.resolveDate(from: ["hour": 99]))
     }
-
-    // MARK: - int coercion
 
     func testIntCoercion() {
         XCTAssertEqual(NativeToolSupport.int(5), 5)
@@ -95,8 +79,6 @@ final class NativeToolSupportTests: XCTestCase {
         XCTAssertNil(NativeToolSupport.int("not a number"))
         XCTAssertNil(NativeToolSupport.int(nil))
     }
-
-    // MARK: - duration formatting
 
     func testDurationFormatting() {
         XCTAssertEqual(NativeToolSupport.duration(45), "45 seconds")

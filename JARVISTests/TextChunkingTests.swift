@@ -1,28 +1,24 @@
-// OpenVision - TextChunkingTests.swift
-// Sentence-boundary detection behind streamed TTS (speak completed sentences while generating).
+// JARVIS - TextChunkingTests.swift
 
 import XCTest
-@testable import OpenVision
+@testable import JARVIS
 
 final class TextChunkingTests: XCTestCase {
-
     private func boundaryOffset(_ s: String) -> Int? {
         guard let idx = TextChunking.lastSentenceBoundary(in: s) else { return nil }
         return s.distance(from: s.startIndex, to: idx)
     }
 
     func testSimpleSentence() {
-        // Terminator at end-of-text counts; boundary is just past it.
         XCTAssertEqual(boundaryOffset("Hello there."), 12)
     }
 
     func testPicksLastCompletedSentence() {
         let s = "First. Second. Trailing fragment"
-        XCTAssertEqual(boundaryOffset(s), 14)   // just past "Second." (dot + following space rule)
+        XCTAssertEqual(boundaryOffset(s), 14)
     }
 
     func testDecimalNumberIsNotABoundary() {
-        // "2.5" must not split — the dot isn't followed by whitespace/end.
         XCTAssertNil(boundaryOffset("The value is 2"))
         XCTAssertEqual(boundaryOffset("The value is 2.5 today."), 23)
     }
@@ -36,40 +32,32 @@ final class TextChunkingTests: XCTestCase {
     }
 
     func testQuestionAndExclamation() {
-        XCTAssertEqual(boundaryOffset("Really? Yes! And then"), 12)   // just past "Yes!"
+        XCTAssertEqual(boundaryOffset("Really? Yes! And then"), 12)
     }
 
-    // MARK: - sentences() (per-sentence Kokoro synthesis — bounds MLX memory spikes)
-
     func testSentencesSplitsOnTerminators() {
-        XCTAssertEqual(TextChunking.sentences("First. Second! Third?"),
-                       ["First.", "Second!", "Third?"])
+        XCTAssertEqual(TextChunking.sentences("First. Second! Third?"), ["First.", "Second!", "Third?"])
     }
 
     func testSentencesKeepsTrailingFragment() {
-        XCTAssertEqual(TextChunking.sentences("Done. And one more thing"),
-                       ["Done.", "And one more thing"])
+        XCTAssertEqual(TextChunking.sentences("Done. And one more thing"), ["Done.", "And one more thing"])
     }
 
     func testSentencesDoesNotSplitDecimals() {
-        XCTAssertEqual(TextChunking.sentences("It is 2.5 meters tall. Impressive."),
-                       ["It is 2.5 meters tall.", "Impressive."])
+        XCTAssertEqual(TextChunking.sentences("It is 2.5 meters tall. Impressive."), ["It is 2.5 meters tall.", "Impressive."])
     }
 
     func testSentencesSplitsOnNewlines() {
-        XCTAssertEqual(TextChunking.sentences("line one\nline two"),
-                       ["line one", "line two"])
+        XCTAssertEqual(TextChunking.sentences("line one\nline two"), ["line one", "line two"])
     }
 
     func testSentencesDropsEmptiesAndTrims() {
-        XCTAssertEqual(TextChunking.sentences("  Hello.   \n\n  World.  "),
-                       ["Hello.", "World."])
+        XCTAssertEqual(TextChunking.sentences("  Hello.   \n\n  World.  "), ["Hello.", "World."])
         XCTAssertEqual(TextChunking.sentences(""), [])
         XCTAssertEqual(TextChunking.sentences("   \n  "), [])
     }
 
     func testSentencesSingleFragment() {
-        XCTAssertEqual(TextChunking.sentences("no terminator here"),
-                       ["no terminator here"])
+        XCTAssertEqual(TextChunking.sentences("no terminator here"), ["no terminator here"])
     }
 }
