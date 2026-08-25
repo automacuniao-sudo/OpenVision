@@ -1,41 +1,26 @@
-// OpenVision - OnboardingView.swift
-// Beautiful onboarding experience for first-time users
+// JARVIS - OnboardingView.swift
+// First-time setup experience
 
 import SwiftUI
 
 struct OnboardingView: View {
-    // MARK: - State
-
     @State private var currentPage = 0
     @Binding var hasCompletedOnboarding: Bool
 
-    // MARK: - Body
-
     var body: some View {
         ZStack {
-            // Animated background
             AnimatedBackground()
 
-            // Content
             VStack(spacing: 0) {
-                // Pages
                 TabView(selection: $currentPage) {
-                    WelcomePage()
-                        .tag(0)
-
-                    FeaturesPage()
-                        .tag(1)
-
-                    SetupPage()
-                        .tag(2)
-
-                    GetStartedPage(hasCompletedOnboarding: $hasCompletedOnboarding)
-                        .tag(3)
+                    WelcomePage().tag(0)
+                    FeaturesPage().tag(1)
+                    SetupPage().tag(2)
+                    GetStartedPage(hasCompletedOnboarding: $hasCompletedOnboarding).tag(3)
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
                 .animation(.easeInOut, value: currentPage)
 
-                // Page indicators
                 HStack(spacing: 8) {
                     ForEach(0..<4, id: \.self) { index in
                         Circle()
@@ -47,13 +32,10 @@ struct OnboardingView: View {
                 }
                 .padding(.bottom, 20)
 
-                // Navigation buttons
                 HStack {
                     if currentPage > 0 {
                         Button("Back") {
-                            withAnimation {
-                                currentPage -= 1
-                            }
+                            withAnimation { currentPage -= 1 }
                         }
                         .foregroundColor(.white.opacity(0.7))
                     }
@@ -62,9 +44,7 @@ struct OnboardingView: View {
 
                     if currentPage < 3 {
                         Button {
-                            withAnimation {
-                                currentPage += 1
-                            }
+                            withAnimation { currentPage += 1 }
                         } label: {
                             HStack {
                                 Text("Next")
@@ -74,12 +54,13 @@ struct OnboardingView: View {
                             .padding(.horizontal, 24)
                             .padding(.vertical, 12)
                             .background(
-                                Capsule()
-                                    .fill(LinearGradient(
+                                Capsule().fill(
+                                    LinearGradient(
                                         colors: [.blue, .purple],
                                         startPoint: .leading,
                                         endPoint: .trailing
-                                    ))
+                                    )
+                                )
                             )
                         }
                     }
@@ -92,8 +73,6 @@ struct OnboardingView: View {
     }
 }
 
-// MARK: - Welcome Page
-
 private struct WelcomePage: View {
     @State private var logoScale: CGFloat = 0.5
     @State private var logoOpacity: CGFloat = 0
@@ -102,9 +81,7 @@ private struct WelcomePage: View {
         VStack(spacing: 32) {
             Spacer()
 
-            // Animated logo
             ZStack {
-                // Outer glow rings
                 ForEach(0..<3, id: \.self) { i in
                     Circle()
                         .stroke(
@@ -119,7 +96,6 @@ private struct WelcomePage: View {
                         .opacity(logoOpacity * (1 - Double(i) * 0.3))
                 }
 
-                // Main logo circle
                 Circle()
                     .fill(
                         LinearGradient(
@@ -131,21 +107,19 @@ private struct WelcomePage: View {
                     .frame(width: 100, height: 100)
                     .shadow(color: .blue.opacity(0.5), radius: 20)
 
-                // Glasses icon
-                Image(systemName: "eyeglasses")
+                Image(systemName: "sparkles")
                     .font(.system(size: 44))
                     .foregroundColor(.white)
             }
             .scaleEffect(logoScale)
             .opacity(logoOpacity)
 
-            // Title
             VStack(spacing: 8) {
-                Text("OpenVision")
+                Text("JARVIS")
                     .font(.system(size: 42, weight: .bold))
                     .foregroundColor(.white)
 
-                Text("Your glasses. Your AI. Your rules.")
+                Text("Seu assistente. Seu contexto. Suas regras.")
                     .font(.title3)
                     .foregroundColor(.white.opacity(0.7))
             }
@@ -163,14 +137,12 @@ private struct WelcomePage: View {
     }
 }
 
-// MARK: - Features Page
-
 private struct FeaturesPage: View {
     var body: some View {
         VStack(spacing: 32) {
             Spacer()
 
-            Text("Powerful Features")
+            Text("JARVIS")
                 .font(.title)
                 .fontWeight(.bold)
                 .foregroundColor(.white)
@@ -179,29 +151,29 @@ private struct FeaturesPage: View {
                 FeatureRow(
                     icon: "mic.fill",
                     color: .blue,
-                    title: "Voice Control",
-                    description: "Say \"Ok Vision\" to activate. Hands-free interaction."
+                    title: "Controle por voz",
+                    description: "Diga \"Ok Jarvis\" para ativar e conversar sem usar as mãos."
                 )
 
                 FeatureRow(
                     icon: "camera.fill",
                     color: .purple,
-                    title: "Smart Vision",
-                    description: "AI sees what you see through your glasses."
+                    title: "Contexto visual",
+                    description: "Analisa imagens e, quando disponível, o que a câmera está vendo."
                 )
 
                 FeatureRow(
                     icon: "bolt.fill",
                     color: .orange,
-                    title: "56+ Tools",
-                    description: "From web search to smart home control."
+                    title: "Ferramentas reais",
+                    description: "Pesquisa atual, recursos do iPhone e integrações do assistente."
                 )
 
                 FeatureRow(
                     icon: "lock.shield.fill",
                     color: .green,
-                    title: "Privacy First",
-                    description: "Wake word means you control when AI listens."
+                    title: "Controle do usuário",
+                    description: "A frase de ativação define quando a conversa começa."
                 )
             }
             .padding(.horizontal, 24)
@@ -220,7 +192,6 @@ private struct FeatureRow: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            // Icon
             ZStack {
                 Circle()
                     .fill(color.opacity(0.2))
@@ -231,7 +202,6 @@ private struct FeatureRow: View {
                     .foregroundColor(color)
             }
 
-            // Text
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.headline)
@@ -257,14 +227,12 @@ private struct FeatureRow: View {
     }
 }
 
-// MARK: - Setup Page
-
 private struct SetupPage: View {
     var body: some View {
         VStack(spacing: 32) {
             Spacer()
 
-            Text("Quick Setup")
+            Text("Configuração rápida")
                 .font(.title)
                 .fontWeight(.bold)
                 .foregroundColor(.white)
@@ -272,26 +240,26 @@ private struct SetupPage: View {
             VStack(spacing: 20) {
                 SetupStep(
                     number: 1,
-                    title: "Choose AI Backend",
-                    description: "OpenClaw for tools & tasks, or Gemini Live for conversation"
+                    title: "Escolha a IA",
+                    description: "Selecione Gemini Live, OpenAI, OpenClaw ou um backend local"
                 )
 
                 SetupStep(
                     number: 2,
-                    title: "Add Credentials",
-                    description: "Enter your gateway URL or API key in Settings"
+                    title: "Adicione as credenciais",
+                    description: "Configure as chaves ou o gateway necessários em Settings"
                 )
 
                 SetupStep(
                     number: 3,
-                    title: "Connect Glasses",
-                    description: "Register your Meta Ray-Bans (or use iPhone camera)"
+                    title: "Configure o hardware",
+                    description: "Use o iPhone e, futuramente, conecte os óculos Meta"
                 )
 
                 SetupStep(
                     number: 4,
-                    title: "Start Talking",
-                    description: "Say \"Ok Vision\" and ask anything"
+                    title: "Comece a falar",
+                    description: "Diga \"Ok Jarvis\" e faça uma pergunta"
                 )
             }
             .padding(.horizontal, 24)
@@ -309,7 +277,6 @@ private struct SetupStep: View {
 
     var body: some View {
         HStack(spacing: 16) {
-            // Number badge
             ZStack {
                 Circle()
                     .fill(
@@ -326,7 +293,6 @@ private struct SetupStep: View {
                     .foregroundColor(.white)
             }
 
-            // Text
             VStack(alignment: .leading, spacing: 4) {
                 Text(title)
                     .font(.headline)
@@ -342,8 +308,6 @@ private struct SetupStep: View {
     }
 }
 
-// MARK: - Get Started Page
-
 private struct GetStartedPage: View {
     @Binding var hasCompletedOnboarding: Bool
     @State private var buttonScale: CGFloat = 1.0
@@ -352,7 +316,6 @@ private struct GetStartedPage: View {
         VStack(spacing: 32) {
             Spacer()
 
-            // Success animation
             ZStack {
                 Circle()
                     .fill(
@@ -381,12 +344,12 @@ private struct GetStartedPage: View {
                     .foregroundColor(.white)
             }
 
-            Text("You're All Set!")
+            Text("JARVIS pronto")
                 .font(.title)
                 .fontWeight(.bold)
                 .foregroundColor(.white)
 
-            Text("Configure your AI backend in Settings and start your first conversation.")
+            Text("Configure o backend de IA em Settings e inicie sua primeira conversa.")
                 .font(.body)
                 .foregroundColor(.white.opacity(0.7))
                 .multilineTextAlignment(.center)
@@ -394,13 +357,12 @@ private struct GetStartedPage: View {
 
             Spacer()
 
-            // Get started button
             Button {
                 withAnimation {
                     hasCompletedOnboarding = true
                 }
             } label: {
-                Text("Get Started")
+                Text("Começar")
                     .font(.headline)
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
@@ -422,7 +384,7 @@ private struct GetStartedPage: View {
             .onAppear {
                 withAnimation(
                     .easeInOut(duration: 1.5)
-                    .repeatForever(autoreverses: true)
+                        .repeatForever(autoreverses: true)
                 ) {
                     buttonScale = 1.05
                 }
