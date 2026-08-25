@@ -153,6 +153,6 @@ enum OpenClawEventType: String {
 enum OpenClawMethod: String {
     case connect = "connect"
     case sendMessage = "chat.send"
-    case cancelRun = "run/cancel"
+    case cancelRun = "chat.abort"
     case toolResult = "tool.result"
 }

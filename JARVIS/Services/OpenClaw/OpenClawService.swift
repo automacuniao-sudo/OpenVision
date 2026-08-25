@@ -65,6 +65,8 @@ final class OpenClawService: ObservableObject {
     private var lifecycleObservers: [Any] = []
     private var wasConnectedBeforeSuspend = false
     private var accumulatedResponse = ""
+    /// Run id returned by chat.send. Used to abort exactly the in-flight OpenClaw turn.
+    private var activeRunId: String?
 
     private static var sessionKey = "jarvis-\(UUID().uuidString.prefix(8))"
 
@@ -303,6 +305,16 @@ final class OpenClawService: ObservableObject {
 
     func sendMessage(_ text: String, imageData: Data? = nil) async throws {
         guard connectionState.isUsable else { throw AIBackendError.notConnected }
+
+        // OpenClaw 2026.7.1 can throw EmbeddedAttemptSessionTakeoverError if a second user turn
+        // mutates the same session while the first embedded prompt temporarily released its lock.
+        // JARVIS replacement speech is interruption semantics, so abort the old turn through the
+        // official chat.abort RPC and wait for its acknowledgement before starting the new one.
+        if isProcessing {
+            await abortCurrentTurn()
+            try? await Task.sleep(nanoseconds: 150_000_000)
+        }
+
         isProcessing = true
         accumulatedResponse = ""
         onProcessingChanged?(true)
@@ -322,24 +334,43 @@ final class OpenClawService: ObservableObject {
 
         let response = try await sendRequest(method: .sendMessage, params: params)
         guard response.ok else {
+            activeRunId = nil
             isProcessing = false
             onProcessingChanged?(false)
             throw AIBackendError.requestFailed(response.error?.message ?? "Message failed")
         }
+        activeRunId = response.payload?["runId"]?.stringValue
     }
 
     func cancelRequest() {
         guard connectionState.isUsable else { return }
-        Task { _ = try? await sendRequest(method: .cancelRun, params: [:]) }
-        isProcessing = false
-        isToolRunning = false
-        currentToolName = nil
-        onProcessingChanged?(false)
-        onToolStatusChanged?(nil, false)
+        Task { [weak self] in
+            await self?.abortCurrentTurn()
+        }
     }
 
     func interrupt() async {
-        cancelRequest()
+        await abortCurrentTurn()
+    }
+
+    /// Abort the active chat turn using the protocol-v4 chat.abort method. The old client used
+    /// `run/cancel` with no session id; OpenClaw 2026.7.1 does not use that as the UI stop path,
+    /// so the old turn could continue and collide with the replacement message.
+    private func abortCurrentTurn() async {
+        guard connectionState.isUsable else { return }
+        var params: [String: Any] = ["sessionKey": Self.sessionKey]
+        if let activeRunId { params["runId"] = activeRunId }
+        let response = try? await sendRequest(method: .cancelRun, params: params)
+        if response?.ok == false {
+            print("[OpenClaw] chat.abort was rejected: \(response?.error?.message ?? "unknown error")")
+        }
+        activeRunId = nil
+        isProcessing = false
+        isToolRunning = false
+        currentToolName = nil
+        accumulatedResponse = ""
+        onProcessingChanged?(false)
+        onToolStatusChanged?(nil, false)
     }
 
     func sendToolResult(callId: String, result: String) async throws {
@@ -462,6 +493,7 @@ final class OpenClawService: ObservableObject {
             case "delta":
                 appendTextBlocks(from: payload)
             case "final":
+                activeRunId = nil
                 isProcessing = false
                 onProcessingChanged?(false)
                 let finalText = textBlocks(from: payload)
@@ -469,13 +501,25 @@ final class OpenClawService: ObservableObject {
                 accumulatedResponse = ""
                 if !responseText.isEmpty { onAgentMessage?(responseText) }
             case "error":
+                activeRunId = nil
                 isProcessing = false
                 onProcessingChanged?(false)
                 let message = payload["errorMessage"]?.stringValue ?? "OpenClaw error"
-                lastError = message
                 accumulatedResponse = ""
-                onAgentMessage?("OpenClaw error: \(message)")
+                if message.localizedCaseInsensitiveContains("session file changed while embedded prompt lock was released") {
+                    // Known OpenClaw 2026.7.1 session-fence race. Do not read a Windows file path
+                    // aloud; rotate the JARVIS session so the very next command starts cleanly.
+                    Self.sessionKey = "jarvis-\(UUID().uuidString.prefix(8))"
+                    let friendly = "Houve um conflito interno de sessão no OpenClaw. A sessão já foi reiniciada; repita o comando."
+                    lastError = friendly
+                    debugInfo = "Recovered from OpenClaw session takeover race"
+                    onAgentMessage?(friendly)
+                } else {
+                    lastError = message
+                    onAgentMessage?("OpenClaw error: \(message)")
+                }
             case "aborted":
+                activeRunId = nil
                 isProcessing = false
                 onProcessingChanged?(false)
                 accumulatedResponse = ""
