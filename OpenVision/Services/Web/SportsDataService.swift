@@ -48,13 +48,8 @@ enum SportsDataService {
         let today = calendar.startOfDay(for: referenceDate)
 
         let asksYesterday = normalized.contains("ontem") || normalized.contains("yesterday")
-        let asksNext = containsAny(normalized, [
-            "proximo jogo", "proxima partida", "next game", "next match"
-        ])
-        let asksLast = containsAny(normalized, [
-            "ultimo jogo", "ultima partida", "jogo mais recente", "partida mais recente",
-            "last game", "last match", "latest game", "latest match"
-        ])
+        let asksNext = asksForNextEvent(normalized)
+        let asksLast = asksForLastEvent(normalized)
         let asksGoals = containsAny(normalized, [
             "gol", "gols", "quem marcou", "marcadores", "scorer", "scorers", "goals"
         ])
@@ -72,24 +67,37 @@ enum SportsDataService {
             startDate = today
             endDate = calendar.date(byAdding: .day, value: 35, to: today) ?? today
         } else if asksLast {
-            startDate = calendar.date(byAdding: .day, value: -21, to: today) ?? today
+            // Give postponed rounds / international competition gaps enough room while still
+            // keeping the payload bounded.
+            startDate = calendar.date(byAdding: .day, value: -35, to: today) ?? today
             endDate = today
         } else if let first = explicitDates.min(), let last = explicitDates.max() {
             startDate = calendar.startOfDay(for: first)
             endDate = calendar.startOfDay(for: last)
         } else {
-            startDate = calendar.date(byAdding: .day, value: -2, to: today) ?? today
-            endDate = calendar.date(byAdding: .day, value: 7, to: today) ?? today
+            startDate = calendar.date(byAdding: .day, value: -3, to: today) ?? today
+            endDate = calendar.date(byAdding: .day, value: 10, to: today) ?? today
         }
 
+        await log(
+            "lookup query=\(query) last=\(asksLast) next=\(asksNext) yesterday=\(asksYesterday) window=\(diagnosticDay(startDate, timeZone: timeZone))..\(diagnosticDay(endDate, timeZone: timeZone))"
+        )
+
         let events = await fetchEvents(startDate: startDate, endDate: endDate, timeZone: timeZone)
-        guard !events.isEmpty else { return nil }
+        guard !events.isEmpty else {
+            await log("ESPN returned no events across configured leagues")
+            return nil
+        }
 
         var relevant = events
             .map { ($0, relevance(of: $0, to: normalized)) }
             .filter { $0.1 > 0 }
 
-        guard !relevant.isEmpty else { return nil }
+        guard !relevant.isEmpty else {
+            let sample = events.prefix(6).map(\.name).joined(separator: " | ")
+            await log("ESPN events=\(events.count) but no team/query match; sample=\(sample)")
+            return nil
+        }
 
         if asksNext {
             relevant = relevant.filter { !$0.0.completed && $0.0.date >= referenceDate.addingTimeInterval(-300) }
@@ -103,6 +111,13 @@ enum SportsDataService {
                 if $0.0.date != $1.0.date { return $0.0.date > $1.0.date }
                 return $0.1 > $1.1
             }
+        } else if asksYesterday || !explicitDates.isEmpty {
+            // Exact-date questions should prefer a completed event if one exists on that date.
+            relevant.sort {
+                if $0.0.completed != $1.0.completed { return $0.0.completed && !$1.0.completed }
+                if $0.1 != $1.1 { return $0.1 > $1.1 }
+                return abs($0.0.date.timeIntervalSince(referenceDate)) < abs($1.0.date.timeIntervalSince(referenceDate))
+            }
         } else {
             relevant.sort {
                 if $0.1 != $1.1 { return $0.1 > $1.1 }
@@ -110,7 +125,10 @@ enum SportsDataService {
             }
         }
 
-        guard var selected = relevant.first?.0 else { return nil }
+        guard var selected = relevant.first?.0 else {
+            await log("Team matched ESPN events, but temporal filtering removed every candidate")
+            return nil
+        }
 
         // Scoreboard payloads normally include goal details, but some competitions omit them.
         // For a scorer question, ask the event summary before falling back to generic web search.
@@ -132,8 +150,14 @@ enum SportsDataService {
 
         // If the user explicitly asked who scored and the structured provider still has no goal
         // details, let the generic provider try instead of encouraging the model to guess.
-        if asksGoals && selected.goals.isEmpty { return nil }
+        if asksGoals && selected.goals.isEmpty {
+            await log("Selected event lacks scorer details; falling back to generic web search event=\(selected.name)")
+            return nil
+        }
 
+        await log(
+            "selected league=\(selected.league.slug) completed=\(selected.completed) date=\(diagnosticDay(selected.date, timeZone: timeZone)) event=\(selected.name)"
+        )
         return render(selected, timeZone: timeZone)
     }
 
@@ -432,6 +456,20 @@ enum SportsDataService {
         return dates
     }
 
+    private static func asksForLastEvent(_ normalized: String) -> Bool {
+        let sportsNouns = ["jogo", "partida", "resultado", "placar", "match", "game", "score"]
+        let lastMarkers = ["ultimo", "ultima", "mais recente", "last", "latest", "recent result"]
+        return lastMarkers.contains(where: normalized.contains)
+            && sportsNouns.contains(where: normalized.contains)
+    }
+
+    private static func asksForNextEvent(_ normalized: String) -> Bool {
+        let sportsNouns = ["jogo", "partida", "match", "game"]
+        let nextMarkers = ["proximo", "proxima", "next"]
+        return nextMarkers.contains(where: normalized.contains)
+            && sportsNouns.contains(where: normalized.contains)
+    }
+
     private static func isFootballEventQuery(_ normalized: String) -> Bool {
         containsAny(normalized, [
             "jogo", "partida", "placar", "resultado", "gol", "gols", "marcou", "marcaram",
@@ -476,5 +514,19 @@ enum SportsDataService {
     private static func unique(_ strings: [String]) -> [String] {
         var seen = Set<String>()
         return strings.filter { seen.insert($0).inserted }
+    }
+
+    private static func diagnosticDay(_ date: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter.string(from: date)
+    }
+
+    private static func log(_ message: String) async {
+        await MainActor.run {
+            DiagnosticLogger.shared.log("SportsData", message)
+        }
     }
 }
