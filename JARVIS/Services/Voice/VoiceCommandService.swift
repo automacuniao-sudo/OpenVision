@@ -109,7 +109,9 @@ final class VoiceCommandService: ObservableObject {
         if let reason = OVCatchException({
             request.append(buffer)
         }) {
-            DiagnosticLogger.shared.log("Voice", "Speech append exception suppressed: \(reason)")
+            Task { @MainActor in
+                DiagnosticLogger.shared.log("Voice", "Speech append exception suppressed: \(reason)")
+            }
         }
     }
 
