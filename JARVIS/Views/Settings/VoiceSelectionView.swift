@@ -1,37 +1,29 @@
-// OpenVision - VoiceSelectionView.swift
+// JARVIS - VoiceSelectionView.swift
 // Voice picker for TTS output
 
 import SwiftUI
 import AVFoundation
 
 struct VoiceSelectionView: View {
-    // MARK: - Environment
-
     @EnvironmentObject var settingsManager: SettingsManager
-
-    // MARK: - State
 
     @State private var voices: [AVSpeechSynthesisVoice] = []
     @State private var isTestingVoice: Bool = false
     @State private var testingVoiceId: String? = nil
 
-    // MARK: - Body
-
     var body: some View {
         List {
-            // System Default Option
             Section {
                 voiceRow(
-                    name: "System Default",
+                    name: "Português (Brasil) padrão",
                     quality: nil,
                     identifier: nil,
                     isSelected: settingsManager.settings.selectedVoiceIdentifier == nil
                 )
             } footer: {
-                Text("Uses the default voice from iOS Settings → Accessibility → Spoken Content")
+                Text("Usa a voz padrão pt-BR disponível no iPhone para respostas em texto, incluindo OpenClaw.")
             }
 
-            // Premium Voices
             let premiumVoices = voices.filter { $0.quality == .premium }
             if !premiumVoices.isEmpty {
                 Section {
@@ -44,13 +36,12 @@ struct VoiceSelectionView: View {
                         )
                     }
                 } header: {
-                    Text("Premium Voices")
+                    Text("Vozes Premium")
                 } footer: {
-                    Text("Highest quality, most natural sounding")
+                    Text("Maior qualidade disponível no iPhone")
                 }
             }
 
-            // Enhanced Voices
             let enhancedVoices = voices.filter { $0.quality == .enhanced }
             if !enhancedVoices.isEmpty {
                 Section {
@@ -63,13 +54,12 @@ struct VoiceSelectionView: View {
                         )
                     }
                 } header: {
-                    Text("Enhanced Voices")
+                    Text("Vozes Aprimoradas")
                 } footer: {
-                    Text("Better quality than default")
+                    Text("Qualidade superior às vozes padrão")
                 }
             }
 
-            // Default Voices
             let defaultVoices = voices.filter { $0.quality == .default }
             if !defaultVoices.isEmpty {
                 Section {
@@ -82,31 +72,28 @@ struct VoiceSelectionView: View {
                         )
                     }
                 } header: {
-                    Text("Default Voices")
+                    Text("Vozes Padrão")
                 }
             }
 
-            // Download More Voices
             Section {
                 Link(destination: URL(string: "App-prefs:ACCESSIBILITY&path=SPEECH")!) {
                     HStack {
-                        Label("Download More Voices", systemImage: "square.and.arrow.down")
+                        Label("Baixar mais vozes", systemImage: "square.and.arrow.down")
                         Spacer()
                         Image(systemName: "arrow.up.right.square")
                             .foregroundColor(.secondary)
                     }
                 }
             } footer: {
-                Text("Download premium and enhanced voices in iOS Settings → Accessibility → Spoken Content → Voices")
+                Text("Baixe vozes brasileiras em Ajustes do iOS → Acessibilidade → Conteúdo Falado → Vozes → Português (Brasil).")
             }
         }
-        .navigationTitle("TTS Voice")
+        .navigationTitle("Voz TTS")
         .onAppear {
             loadVoices()
         }
     }
-
-    // MARK: - Voice Row
 
     @ViewBuilder
     private func voiceRow(name: String, quality: AVSpeechSynthesisVoiceQuality?, identifier: String?, isSelected: Bool) -> some View {
@@ -127,7 +114,6 @@ struct VoiceSelectionView: View {
 
                 Spacer()
 
-                // Test button
                 Button {
                     testVoice(identifier: identifier)
                 } label: {
@@ -152,10 +138,8 @@ struct VoiceSelectionView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Actions
-
     private func loadVoices() {
-        voices = TTSService.availableVoices(for: "en")
+        voices = TTSService.availableVoices(for: "pt-BR")
     }
 
     private func selectVoice(identifier: String?) {
@@ -166,20 +150,20 @@ struct VoiceSelectionView: View {
         isTestingVoice = true
         testingVoiceId = identifier
 
-        let utterance = AVSpeechUtterance(string: "Hello! This is how I sound. I'm your AI assistant.")
+        let utterance = AVSpeechUtterance(string: "Olá! Esta é a voz do JARVIS falando em português do Brasil.")
 
         if let identifier = identifier,
-           let voice = AVSpeechSynthesisVoice(identifier: identifier) {
+           let voice = AVSpeechSynthesisVoice(identifier: identifier),
+           voice.language.lowercased().hasPrefix("pt") {
             utterance.voice = voice
         } else {
-            utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+            utterance.voice = AVSpeechSynthesisVoice(language: "pt-BR")
         }
 
         let synthesizer = AVSpeechSynthesizer()
         synthesizer.speak(utterance)
 
-        // Reset state after estimated speech duration
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
             isTestingVoice = false
             testingVoiceId = nil
         }

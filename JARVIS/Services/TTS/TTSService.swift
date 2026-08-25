@@ -1,61 +1,54 @@
-// OpenVision - TTSService.swift
+// JARVIS - TTSService.swift
 // Text-to-speech service using AVSpeechSynthesizer
 
 import AVFoundation
 import Foundation
 
-/// Text-to-speech service for OpenClaw mode
+/// Text-to-speech service for text-based backends such as OpenClaw.
 @MainActor
 final class TTSService: NSObject, ObservableObject {
-    // MARK: - Singleton
-
     static let shared = TTSService()
-
-    // MARK: - Published State
 
     @Published var isSpeaking: Bool = false
 
-    // MARK: - Callbacks
-
-    /// Called when speech starts
     var onSpeechStarted: (() -> Void)?
-
-    /// Called when speech ends
     var onSpeechEnded: (() -> Void)?
 
-    // MARK: - Speech Synthesizer
-
     private let synthesizer = AVSpeechSynthesizer()
-
-    // MARK: - Streaming state
-
-    /// Utterances enqueued but not yet finished. `isSpeaking` only drops to false when this
-    /// hits 0 AND no more chunks are coming — so it doesn't flap between queued sentences.
     private var pendingUtterances = 0
-
-    /// True while a streamed reply is still being fed sentence-by-sentence. Keeps `isSpeaking`
-    /// latched even if the audio queue momentarily drains faster than the LLM produces text.
     private var streamingActive = false
 
-    // MARK: - Voice Selection
-
+    // JARVIS' primary spoken language is Brazilian Portuguese. Never read Portuguese
+    // using an English voice (the previous default was en-US and the picker only exposed
+    // English voices, which caused a strong foreign accent in OpenClaw replies).
     private var selectedVoice: AVSpeechSynthesisVoice? {
-        // Check if user has selected a specific voice
         if let identifier = SettingsManager.shared.settings.selectedVoiceIdentifier,
-           let voice = AVSpeechSynthesisVoice(identifier: identifier) {
+           let voice = AVSpeechSynthesisVoice(identifier: identifier),
+           voice.language.lowercased().hasPrefix("pt") {
             return voice
         }
 
-        // Fall back to default English voice
-        return AVSpeechSynthesisVoice(language: "en-US")
+        return AVSpeechSynthesisVoice(language: "pt-BR")
+            ?? AVSpeechSynthesisVoice.speechVoices().first(where: {
+                $0.language.lowercased().hasPrefix("pt-br")
+            })
+            ?? AVSpeechSynthesisVoice.speechVoices().first(where: {
+                $0.language.lowercased().hasPrefix("pt")
+            })
     }
 
-    /// Get all available voices for a language
-    static func availableVoices(for languageCode: String = "en") -> [AVSpeechSynthesisVoice] {
+    /// Get all available voices for a language.
+    static func availableVoices(for languageCode: String = "pt-BR") -> [AVSpeechSynthesisVoice] {
+        let normalized = languageCode.lowercased()
         return AVSpeechSynthesisVoice.speechVoices()
-            .filter { $0.language.hasPrefix(languageCode) }
+            .filter { voice in
+                let language = voice.language.lowercased()
+                if normalized == "pt-br" {
+                    return language.hasPrefix("pt-br")
+                }
+                return language.hasPrefix(normalized)
+            }
             .sorted { v1, v2 in
-                // Sort by quality (premium first), then by name
                 if v1.quality != v2.quality {
                     return v1.quality.rawValue > v2.quality.rawValue
                 }
@@ -63,7 +56,6 @@ final class TTSService: NSObject, ObservableObject {
             }
     }
 
-    /// Get display name for a voice quality
     static func qualityDisplayName(_ quality: AVSpeechSynthesisVoiceQuality) -> String {
         switch quality {
         case .default: return "Default"
@@ -73,36 +65,24 @@ final class TTSService: NSObject, ObservableObject {
         }
     }
 
-    // MARK: - Initialization
-
     private override init() {
         super.init()
-
-        // Deixa o iOS gerenciar uma sessão de áudio separada para o TTS.
-        // Evita conflito com microfone, wake word e AVAudioEngine do OpenVision.
         synthesizer.usesApplicationAudioSession = false
-
         synthesizer.delegate = self
     }
 
-    // MARK: - Speak
-
     /// Speak text (single-shot: replaces anything currently playing).
     func speak(_ text: String) {
-    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
 
-    if synthesizer.isSpeaking || synthesizer.isPaused {
-        stop()
+        if synthesizer.isSpeaking || synthesizer.isPaused {
+            stop()
+        }
+
+        enqueue(trimmed)
     }
 
-    enqueue(trimmed)
-}
-
-    // MARK: - Streaming (sentence-by-sentence)
-
-    /// Begin a streamed reply. Clears the queue and latches `isSpeaking` true so the recognizer
-    /// stays paused across the gaps between sentences while the LLM is still generating.
     func beginStreaming() {
         stop()
         streamingActive = true
@@ -110,15 +90,12 @@ final class TTSService: NSObject, ObservableObject {
         onSpeechStarted?()
     }
 
-    /// Enqueue one sentence without interrupting what's already queued. AVSpeechSynthesizer plays
-    /// queued utterances back-to-back, so this pipelines speech behind the LLM as it streams.
     func speakChunk(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         enqueue(trimmed)
     }
 
-    /// Signal that no more sentences are coming. Releases the latch once the queue drains.
     func endStreaming() {
         streamingActive = false
         if pendingUtterances == 0 {
@@ -127,7 +104,6 @@ final class TTSService: NSObject, ObservableObject {
         }
     }
 
-    /// Build an utterance with the selected voice and hand it to the synthesizer's queue.
     private func enqueue(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = selectedVoice
@@ -138,7 +114,6 @@ final class TTSService: NSObject, ObservableObject {
         synthesizer.speak(utterance)
     }
 
-    /// Stop speaking and clear the queue.
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
         streamingActive = false
@@ -146,18 +121,14 @@ final class TTSService: NSObject, ObservableObject {
         isSpeaking = false
     }
 
-    /// Pause speaking
     func pause() {
         synthesizer.pauseSpeaking(at: .word)
     }
 
-    /// Continue speaking
     func continueSpeaking() {
         synthesizer.continueSpeaking()
     }
 }
-
-// MARK: - AVSpeechSynthesizerDelegate
 
 extension TTSService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
@@ -172,7 +143,6 @@ extension TTSService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         Task { @MainActor in
             self.pendingUtterances = max(0, self.pendingUtterances - 1)
-            // Only truly "done" when the queue is empty AND no more sentences are coming.
             if self.pendingUtterances == 0 && !self.streamingActive {
                 self.isSpeaking = false
                 self.onSpeechEnded?()
