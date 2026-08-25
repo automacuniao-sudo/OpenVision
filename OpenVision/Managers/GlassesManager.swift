@@ -1,13 +1,14 @@
 // OpenVision - GlassesManager.swift
-// Singleton manager for Meta Ray-Ban glasses via DAT SDK
+// Singleton manager for Meta Ray-Ban glasses via DAT SDK 0.9
 
 import Foundation
 import SwiftUI
 import CoreMedia
+import OSLog
 import MWDATCore
 import MWDATCamera
 
-/// Manages Meta Ray-Ban glasses registration, connection, and camera streaming
+/// Manages Meta smart-glasses registration, connection, DAT developer component, and camera stream.
 @MainActor
 final class GlassesManager: ObservableObject {
     // MARK: - Singleton
@@ -16,37 +17,21 @@ final class GlassesManager: ObservableObject {
 
     // MARK: - Published Properties
 
-    /// Whether the app is registered with Meta AI
     @Published var isRegistered: Bool = false
-
-    /// Currently connected device identifier
     @Published var connectedDevice: DeviceIdentifier?
-
-    /// Number of connected devices
     @Published var connectedDeviceCount: Int = 0
-
-    /// Whether camera streaming is active
     @Published var isStreaming: Bool = false
-
-    /// Last captured video frame
     @Published var lastFrame: UIImage?
-
-    /// When `lastFrame` was received. Lets the live loop tell a fresh frame from a stale one when
-    /// the Bluetooth stream throttles under head motion (so it doesn't describe an old view).
     private(set) var lastFrameTime: Date = .distantPast
-
-    /// Last captured photo data
     @Published var lastPhotoData: Data?
-
-    /// Error message for UI display
     @Published var errorMessage: String?
 
-    // MARK: - Private Properties
+    // MARK: - DAT 0.9 lifecycle
 
     private let wearables = Wearables.shared
-    private var streamSession: StreamSession?
+    private var deviceSession: DeviceSession?
+    private var camera: Camera?
 
-    // Listener tokens (retained to keep subscriptions active)
     private var registrationTask: Task<Void, Never>?
     private var devicesTask: Task<Void, Never>?
     private var stateListenerToken: (any AnyListenerToken)?
@@ -56,50 +41,39 @@ final class GlassesManager: ObservableObject {
 
     // MARK: - Callbacks
 
-    /// Called when a video frame is received
     var onVideoFrame: ((UIImage) -> Void)?
-
-    /// Called with the raw sample buffer for every video frame — used by SessionRecorder to mux
-    /// the glasses POV into a movie file without going through UIImage. Independent of `onVideoFrame`.
     var onVideoSampleBuffer: ((CMSampleBuffer) -> Void)?
-
-    /// Called when a photo is captured
     var onPhotoCaptured: ((Data) -> Void)?
 
     // MARK: - Initialization
 
     private init() {
-        print("[GlassesManager] Initializing")
+        log("Initializing DAT manager")
         setupRegistrationListener()
         setupDevicesListener()
     }
 
     // MARK: - Registration
 
-    /// Register app with Meta AI
     func register() async throws {
-        print("[GlassesManager] Starting registration")
+        log("Starting registration")
 
-        // Check if already registered
         for await state in wearables.registrationStateStream() {
             if case .registered = state {
-                print("[GlassesManager] Already registered")
                 isRegistered = true
+                log("Already registered")
                 return
             }
             break
         }
 
-        // Start registration flow
         try await wearables.startRegistration()
-        print("[GlassesManager] Registration initiated, waiting for Meta AI callback")
+        log("Registration initiated; waiting for Meta AI callback")
     }
 
-    /// Unregister app from Meta AI
     func unregister() async {
-        print("[GlassesManager] Starting unregistration")
+        log("Starting unregistration")
 
-        // Stop streaming first if active
         if isStreaming {
             await stopStreaming()
         }
@@ -110,125 +84,199 @@ final class GlassesManager: ObservableObject {
             connectedDevice = nil
             connectedDeviceCount = 0
             errorMessage = nil
-            print("[GlassesManager] Unregistration successful")
+            log("Unregistration successful")
         } catch {
             errorMessage = "Unregister failed: \(error.localizedDescription)"
-            print("[GlassesManager] Unregistration error: \(error)")
+            log("Unregistration error: \(error.localizedDescription)")
+        }
+    }
+
+    /// Ask Meta AI to stage/update the DAT developer component on the glasses. This is required on
+    /// devices where registration is valid but the on-glasses developer app/DWA is missing.
+    func installOrUpdateGlassesApp() async {
+        do {
+            log("Opening DAT glasses app update flow")
+            try await wearables.openDATGlassesAppUpdate()
+            log("DAT glasses app update hand-off opened")
+        } catch {
+            errorMessage = "Glasses app update hand-off failed: \(error.localizedDescription)"
+            log("DAT glasses app update hand-off failed: \(error.localizedDescription)")
         }
     }
 
     // MARK: - Streaming
 
-    /// Start camera streaming from glasses
     func startStreaming() async {
         guard isRegistered else {
             errorMessage = "Not registered with Meta AI"
-            print("[GlassesManager] Cannot start streaming - not registered")
+            log("Cannot start streaming: not registered")
             return
         }
 
         guard !isStreaming else {
-            print("[GlassesManager] Already streaming")
+            log("Already streaming")
             return
         }
 
-        // Check for connected device
         guard let deviceId = connectedDevice else {
             errorMessage = "No glasses connected"
-            print("[GlassesManager] Cannot start streaming - no device connected")
+            log("Cannot start streaming: no connected device")
             return
         }
 
-        print("[GlassesManager] Starting camera stream for device: \(deviceId)")
+        errorMessage = nil
+        log("Starting camera stream device=\(deviceId)")
 
-        // Request camera permission first (like xmeta does)
+        // Ask the SDK for its compatibility verdict before opening a session. This gives us a useful
+        // diagnosis for firmware/SDK mismatch instead of only an opaque "Device unavailable".
+        if let device = wearables.deviceForIdentifier(deviceId) {
+            let compatibility = device.compatibility()
+            log("Device type=\(device.deviceType()) link=\(device.linkState) compatibility=\(compatibility)")
+            if compatibility == .deviceUpdateRequired {
+                errorMessage = "Glasses firmware update required — update them in the Meta AI app"
+            } else if compatibility == .sdkUpdateRequired {
+                errorMessage = "Glasses are newer than the installed Meta DAT SDK"
+            }
+        } else {
+            log("deviceForIdentifier returned nil for \(deviceId)")
+        }
+
+        // Camera permission is controlled by the Meta Wearables registration, not only iOS camera
+        // permission. Request it before creating the device/camera session.
         do {
             var status = try await wearables.checkPermissionStatus(.camera)
-            print("[GlassesManager] Camera permission status: \(status)")
+            log("Camera permission status=\(status)")
 
             if status != .granted {
-                print("[GlassesManager] Requesting camera permission...")
                 status = try await wearables.requestPermission(.camera)
-                print("[GlassesManager] After request, status: \(status)")
+                log("Camera permission after request=\(status)")
             }
 
             guard status == .granted else {
                 errorMessage = "Camera permission denied"
-                print("[GlassesManager] Camera permission not granted")
+                log("Camera permission not granted")
                 return
             }
         } catch {
             errorMessage = "Permission error: \(error.localizedDescription)"
-            print("[GlassesManager] Permission error: \(error)")
+            log("Camera permission error: \(error.localizedDescription)")
             return
         }
 
-        // Use SpecificDeviceSelector like xmeta does (more reliable than AutoDeviceSelector)
-        let specificSelector = SpecificDeviceSelector(device: deviceId)
-
-        // Configure stream session
-        let config = StreamSessionConfig(
+        let selector = SpecificDeviceSelector(device: deviceId)
+        let config = StreamConfiguration(
             videoCodec: .raw,
-            resolution: .medium,  // Medium resolution like xmeta
-            frameRate: 30         // 30fps like xmeta
+            resolution: .medium,
+            frameRate: 30
         )
 
-        streamSession = StreamSession(
-            streamSessionConfig: config,
-            deviceSelector: specificSelector
-        )
+        do {
+            let session = try wearables.createSession(deviceSelector: selector)
+            deviceSession = session
 
-        guard let session = streamSession else {
-            errorMessage = "Failed to create stream session"
-            print("[GlassesManager] Failed to create stream session")
-            return
+            // DAT 0.9 ordering is critical: start DeviceSession and wait for .started BEFORE
+            // addCamera. Calling addCamera on an idle session can simply return nil.
+            let stateStream = session.stateStream()
+            let sessionErrorTask = Task {
+                for await error in session.errorStream() {
+                    await MainActor.run {
+                        self.errorMessage = "Session error: \(error.description)"
+                        self.log("Device session error: \(error.description)")
+                    }
+                }
+            }
+            defer { sessionErrorTask.cancel() }
+
+            log("Starting DeviceSession")
+            try session.start()
+
+            let started = await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    for await state in stateStream {
+                        await MainActor.run {
+                            self.log("DeviceSession state=\(state)")
+                        }
+                        if state == .started { return true }
+                        if state == .stopped { return false }
+                    }
+                    return false
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    return false
+                }
+
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+
+            guard started else {
+                errorMessage = "Device session did not start (timeout or device rejected session)"
+                log("DeviceSession failed to reach .started")
+                dumpSDKLogs(since: 30)
+                session.stop()
+                deviceSession = nil
+                return
+            }
+
+            guard let attachedCamera = try session.addCamera(config: config) else {
+                errorMessage = "Failed to attach camera to device session"
+                log("DeviceSession.addCamera returned nil")
+                dumpSDKLogs(since: 30)
+                session.stop()
+                deviceSession = nil
+                return
+            }
+
+            camera = attachedCamera
+            setupStreamListeners(stream: attachedCamera.stream)
+            attachedCamera.stream.start()
+            isStreaming = true
+            log("Streaming started successfully")
+        } catch {
+            errorMessage = "Stream start failed: \(error.localizedDescription)"
+            log("Stream start error: \(error.localizedDescription)")
+            dumpSDKLogs(since: 30)
+            cleanupStreamListeners()
+            camera = nil
+            deviceSession?.stop()
+            deviceSession = nil
+            isStreaming = false
         }
-
-        // Set up listeners
-        setupStreamListeners(session: session)
-
-        // Start streaming
-        print("[GlassesManager] Starting stream session...")
-        await session.start()
-        isStreaming = true
-        print("[GlassesManager] Streaming started successfully")
     }
 
-    /// Stop camera streaming
     func stopStreaming() async {
-        guard isStreaming, let session = streamSession else { return }
+        guard isStreaming || camera != nil || deviceSession != nil else { return }
 
-        print("[GlassesManager] Stopping camera stream")
-
-        await session.stop()
+        log("Stopping camera stream")
+        camera?.stop()
+        deviceSession?.stop()
 
         cleanupStreamListeners()
-        streamSession = nil
+        camera = nil
+        deviceSession = nil
         isStreaming = false
         lastFrame = nil
         lastFrameTime = .distantPast
-
-        print("[GlassesManager] Streaming stopped")
+        log("Streaming stopped")
     }
 
-    /// Capture a photo from the glasses camera
     func capturePhoto() async {
-        guard isStreaming, let session = streamSession else {
+        guard isStreaming, let stream = camera?.stream else {
             errorMessage = "Streaming must be active to capture photos"
             return
         }
 
-        print("[GlassesManager] Capturing photo")
-
-        do {
-            try await session.capturePhoto(format: .jpeg)
-        } catch {
-            errorMessage = "Failed to capture photo: \(error.localizedDescription)"
-            print("[GlassesManager] Photo capture error: \(error)")
+        log("Capturing photo")
+        // DAT 0.9 capturePhoto is non-throwing; async failures are published by stream.errorPublisher.
+        if !stream.capturePhoto(format: .jpeg) {
+            errorMessage = "Failed to start photo capture"
+            log("capturePhoto returned false")
         }
     }
 
-    // MARK: - Private Methods
+    // MARK: - Listeners
 
     private func setupRegistrationListener() {
         registrationTask = Task {
@@ -236,10 +284,10 @@ final class GlassesManager: ObservableObject {
                 await MainActor.run {
                     if case .registered = state {
                         self.isRegistered = true
-                        print("[GlassesManager] Registration state: registered")
+                        self.log("Registration state=registered")
                     } else {
                         self.isRegistered = false
-                        print("[GlassesManager] Registration state: \(state)")
+                        self.log("Registration state=\(state)")
                     }
                 }
             }
@@ -252,16 +300,16 @@ final class GlassesManager: ObservableObject {
                 await MainActor.run {
                     self.connectedDeviceCount = devices.count
                     self.connectedDevice = devices.first
-                    print("[GlassesManager] Devices updated: \(devices.count) connected")
+                    self.log("Devices updated count=\(devices.count) first=\(String(describing: devices.first))")
                 }
             }
         }
     }
 
-    private func setupStreamListeners(session: StreamSession) {
-        // State listener
-        stateListenerToken = session.statePublisher.listen { [weak self] state in
+    private func setupStreamListeners(stream: MWDATCamera.Stream) {
+        stateListenerToken = stream.statePublisher.listen { [weak self] state in
             Task { @MainActor in
+                self?.log("Camera stream state=\(state)")
                 switch state {
                 case .streaming:
                     self?.isStreaming = true
@@ -273,11 +321,8 @@ final class GlassesManager: ObservableObject {
             }
         }
 
-        // Video frame listener
-        videoFrameListenerToken = session.videoFramePublisher.listen { [weak self] frame in
+        videoFrameListenerToken = stream.videoFramePublisher.listen { [weak self] frame in
             Task { @MainActor in
-                // Hand the raw sample buffer to the recorder (if any). SessionRecorder immediately
-                // hops it onto its own writer queue, so this stays cheap even at 30fps.
                 self?.onVideoSampleBuffer?(frame.sampleBuffer)
                 if let image = frame.makeUIImage() {
                     self?.lastFrame = image
@@ -287,21 +332,23 @@ final class GlassesManager: ObservableObject {
             }
         }
 
-        // Photo data listener
-        photoDataListenerToken = session.photoDataPublisher.listen { [weak self] photoData in
+        photoDataListenerToken = stream.photoDataPublisher.listen { [weak self] photoData in
             Task { @MainActor in
                 let data = photoData.data
                 self?.lastPhotoData = data
                 self?.onPhotoCaptured?(data)
-                print("[GlassesManager] Photo captured: \(data.count) bytes")
+                self?.log("Photo captured bytes=\(data.count)")
             }
         }
 
-        // Error listener
-        errorListenerToken = session.errorPublisher.listen { [weak self] error in
+        errorListenerToken = stream.errorPublisher.listen { [weak self] error in
             Task { @MainActor in
-                self?.errorMessage = error.localizedDescription
-                print("[GlassesManager] Stream error: \(error)")
+                // DAT's raw-video codec is expected to pause when the app is inactive/screen-locked.
+                // Do not throw a scary modal for that expected lifecycle event; keep it in logs.
+                if UIApplication.shared.applicationState == .active {
+                    self?.errorMessage = error.localizedDescription
+                }
+                self?.log("Camera stream error: \(error.localizedDescription)")
             }
         }
     }
@@ -311,5 +358,32 @@ final class GlassesManager: ObservableObject {
         videoFrameListenerToken = nil
         photoDataListenerToken = nil
         errorListenerToken = nil
+    }
+
+    // MARK: - Diagnostics
+
+    /// DAT writes teardown details to OSLog. Dump our process's non-Apple entries when session
+    /// startup fails so field logs contain the real SDK reason (DWA missing, manifest, device, etc.).
+    private func dumpSDKLogs(since seconds: TimeInterval) {
+        do {
+            let store = try OSLogStore(scope: .currentProcessIdentifier)
+            let position = store.position(date: Date().addingTimeInterval(-seconds))
+            let entries = try store.getEntries(at: position)
+            log("===== Meta DAT SDK log dump last \(Int(seconds))s =====")
+            for entry in entries {
+                guard let item = entry as? OSLogEntryLog else { continue }
+                let subsystem = item.subsystem
+                guard !subsystem.isEmpty, !subsystem.hasPrefix("com.apple") else { continue }
+                print("[SDKLOG] \(subsystem)/\(item.category) [\(item.level.rawValue)] \(item.composedMessage)")
+            }
+            log("===== end Meta DAT SDK log dump =====")
+        } catch {
+            log("OSLogStore dump failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func log(_ message: String) {
+        print("[GlassesManager] \(message)")
+        DiagnosticLogger.shared.log("MetaDAT", message)
     }
 }
