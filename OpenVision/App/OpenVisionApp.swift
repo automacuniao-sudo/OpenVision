@@ -65,6 +65,22 @@ struct OpenVisionApp: App {
                     "App",
                     "Scene phase=\(phase) voiceListening=\(VoiceCommandService.shared.isListening) route=\(AudioSessionManager.shared.currentRouteDescription)"
                 )
+
+                // A stopped/interrupted voice turn can leave Gemini's resumable WebSocket alive
+                // after the app goes to background. Gemini then closes that idle socket every few
+                // minutes and the recovery loop reconnects forever, wasting battery/network while
+                // the user is not in an active turn. Keep the always-on Apple wake listener, but
+                // close an IDLE Gemini connection. The next captured command reconnects on demand.
+                if phase == .background,
+                   !GeminiLiveService.shared.isProcessing,
+                   !GeminiLiveService.shared.isModelSpeaking,
+                   GeminiLiveService.shared.connectionState.isUsable {
+                    Task { @MainActor in
+                        DiagnosticLogger.shared.log("Gemini", "Backgrounded while idle; closing live session")
+                        await GeminiLiveService.shared.disconnect()
+                    }
+                }
+
                 // If iOS returned us to active after an interruption/background transition and the
                 // recognizer died, revive wake-word listening. Background audio itself keeps the
                 // already-running listener alive; this is a recovery path, not a cold-launch hack.
