@@ -26,12 +26,11 @@ jobs:
       - name: Criar arquivos de configuracao
         run: |
           cp Config.xcconfig.example Config.xcconfig
-          cp OpenVision/Config/Config.swift.example OpenVision/Config/Config.swift
+          cp JARVIS/Config/Config.swift.example JARVIS/Config/Config.swift
 
           sed -i '' 's/YOUR_TEAM_ID//' Config.xcconfig
-          sed -i '' 's/com.yourcompany.openvision/com.automacuniao.jarvis/' Config.xcconfig
+          sed -i '' 's/com.yourcompany.jarvis/com.automacuniao.jarvis/' Config.xcconfig
           sed -i '' 's/YOUR_META_APP_ID/0000000000/g' Config.xcconfig
-          sed -i '' 's/openvision/jarvis/' Config.xcconfig
 
       - name: Instalar Metal Toolchain
         run: |
@@ -44,8 +43,8 @@ jobs:
       - name: Compilar sem assinatura
         run: |
           xcodebuild \
-            -project OpenVision.xcodeproj \
-            -scheme OpenVision \
+            -project JARVIS.xcodeproj \
+            -scheme JARVIS \
             -configuration Debug \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
@@ -59,13 +58,13 @@ jobs:
       - name: Criar IPA
         run: |
           mkdir -p build/ipa/Payload
-          cp -R build/DerivedData/Build/Products/Debug-iphoneos/OpenVision.app build/ipa/Payload/
+          cp -R build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app build/ipa/Payload/
 
           cd build/ipa
-          zip -r OpenVision-unsigned.ipa Payload
+          zip -r JARVIS-unsigned.ipa Payload
 
       - name: Salvar IPA
         uses: actions/upload-artifact@v4
         with:
           name: JARVIS-iOS-unsigned
-          path: build/ipa/OpenVision-unsigned.ipa
+          path: build/ipa/JARVIS-unsigned.ipa

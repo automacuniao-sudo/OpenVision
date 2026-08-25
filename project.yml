@@ -1,6 +1,6 @@
-name: OpenVision
+name: JARVIS
 options:
-  bundleIdPrefix: com.openvision
+  bundleIdPrefix: com.jarvis
   # Bumped 16 → 18 for the on-device Gemma 4 (MLX) backend, which needs iOS 18 at runtime.
   # Revert to 16 + gate GemmaLocalService behind `if #available(iOS 18)` to keep older support.
   deploymentTarget:
@@ -12,11 +12,11 @@ options:
 settings:
   base:
     MARKETING_VERSION: "2.10.0"
-    CURRENT_PROJECT_VERSION: "26"
+    CURRENT_PROJECT_VERSION: "27"
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
-    INFOPLIST_FILE: OpenVision/Resources/Info.plist
+    INFOPLIST_FILE: JARVIS/Resources/Info.plist
     PRODUCT_BUNDLE_IDENTIFIER: ${PRODUCT_BUNDLE_IDENTIFIER}
     META_APP_ID: ${META_APP_ID}
     CLIENT_TOKEN: ${CLIENT_TOKEN}
@@ -35,38 +35,38 @@ configFiles:
   Release: Config.xcconfig
 
 targets:
-  OpenVisionTests:
+  JARVISTests:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: OpenVisionTests
+      - path: JARVISTests
     dependencies:
-      - target: OpenVision
+      - target: JARVIS
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
 
-  OpenVision:
+  JARVIS:
     type: application
     platform: iOS
     sources:
-      - path: OpenVision
+      - path: JARVIS
         excludes:
           - "**/*.example"
     resources:
-      - path: OpenVision/Resources
+      - path: JARVIS/Resources
         excludes:
           - "**/*.plist"
     settings:
       base:
-        INFOPLIST_FILE: OpenVision/Resources/Info.plist
+        INFOPLIST_FILE: JARVIS/Resources/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: $(PRODUCT_BUNDLE_IDENTIFIER)
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: false
         ENABLE_PREVIEWS: true
-        CODE_SIGN_ENTITLEMENTS: OpenVision/OpenVision.entitlements
-        SWIFT_OBJC_BRIDGING_HEADER: OpenVision/OpenVision-Bridging-Header.h
+        CODE_SIGN_ENTITLEMENTS: JARVIS/OpenVision.entitlements
+        SWIFT_OBJC_BRIDGING_HEADER: JARVIS/OpenVision-Bridging-Header.h
     dependencies:
       - package: meta-wearables-dat-ios
         products:
@@ -124,10 +124,10 @@ packages:
     path: Vendor/kokoro-ios
 
 schemes:
-  OpenVision:
+  JARVIS:
     build:
       targets:
-        OpenVision: all
+        JARVIS: all
     run:
       config: Debug
       commandLineArguments:
@@ -136,7 +136,7 @@ schemes:
       config: Debug
       gatherCoverageData: true
       targets:
-        - OpenVisionTests
+        - JARVISTests
     profile:
       config: Release
     analyze:
