@@ -2,9 +2,10 @@ name: Fix Build 31 compile error
 
 on:
   push:
-    branches: [jarvis-dev]
+    branches:
+      - jarvis-dev
     paths:
-      - .github/workflows/fix-build31-compile.yml
+      - '.github/workflows/fix-build31-compile.yml'
 
 permissions:
   contents: write
@@ -18,36 +19,16 @@ jobs:
           ref: jarvis-dev
           fetch-depth: 0
 
-      - name: Patch MainActor diagnostic call
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          path = Path('JARVIS/Services/Voice/VoiceCommandService.swift')
-          text = path.read_text()
-          old = '''        if let reason = OVCatchException({
-            request.append(buffer)
-        }) {
-            DiagnosticLogger.shared.log("Voice", "Speech append exception suppressed: \\(reason)")
-        }
-'''
-          new = '''        if let reason = OVCatchException({
-            request.append(buffer)
-        }) {
-            Task { @MainActor in
-                DiagnosticLogger.shared.log("Voice", "Speech append exception suppressed: \\(reason)")
-            }
-        }
-'''
-          if old not in text:
-              raise SystemExit('Expected appendSafely block not found; refusing blind patch')
-          path.write_text(text.replace(old, new, 1))
-          PY
+      - name: Patch VoiceCommandService
+        shell: bash
+        run: echo 'ZnJvbSBwYXRobGliIGltcG9ydCBQYXRoCnAgPSBQYXRoKCJKQVJWSVMvU2VydmljZXMvVm9pY2UvVm9pY2VDb21tYW5kU2VydmljZS5zd2lmdCIpCnMgPSBwLnJlYWRfdGV4dCgpCm9sZCA9ICcgICAgICAgICAgICBEaWFnbm9zdGljTG9nZ2VyLnNoYXJlZC5sb2coIlZvaWNlIiwgIlNwZWVjaCBhcHBlbmQgZXhjZXB0aW9uIHN1cHByZXNzZWQ6IFxcKHJlYXNvbikiKScKbmV3ID0gJyAgICAgICAgICAgIFRhc2sgeyBATWFpbkFjdG9yIGluXG4gICAgICAgICAgICAgICAgRGlhZ25vc3RpY0xvZ2dlci5zaGFyZWQubG9nKCJWb2ljZSIsICJTcGVlY2ggYXBwZW5kIGV4Y2VwdGlvbiBzdXBwcmVzc2VkOiBcXChyZWFzb24pIilcbiAgICAgICAgICAgIH0nCmlmIG9sZCBub3QgaW4gczoKICAgIHJhaXNlIFN5c3RlbUV4aXQoIkV4cGVjdGVkIERpYWdub3N0aWNMb2dnZXIgY2FsbCBub3QgZm91bmQiKQpwLndyaXRlX3RleHQocy5yZXBsYWNlKG9sZCwgbmV3LCAxKSkK' | base64 --decode | python3
 
       - name: Commit fix
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add JARVIS/Services/Voice/VoiceCommandService.swift
+          git diff --cached --quiet && exit 1 || true
           git commit -m "Fix Build 31 MainActor compile error"
           git push origin HEAD:jarvis-dev
