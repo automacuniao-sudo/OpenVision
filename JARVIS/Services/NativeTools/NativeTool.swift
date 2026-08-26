@@ -59,7 +59,9 @@ final class NativeToolRegistry {
             ClipboardTool(),
             DocumentSearchTool(),
             DeviceStatusTool(),
+            CurrentDateTimeTool(),
             WebSearchTool(),
+            LastSearchSourcesTool(),
         ]
         var map: [String: NativeTool] = [:]
         for t in all { map[t.name] = t }

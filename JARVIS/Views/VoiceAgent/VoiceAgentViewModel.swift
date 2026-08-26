@@ -1117,6 +1117,26 @@ final class VoiceAgentViewModel: ObservableObject {
 
         agentState = .thinking
 
+        // Deterministic PC browser actions do not need an LLM. OpenClaw Gateway exposes
+        // tools.invoke, so explicit commands such as "no meu computador abra o YouTube" can still
+        // work when the provider configured on the PC is quota-limited. If browser policy/plugin is
+        // unavailable, fall through to the normal OpenClaw agent exactly as before.
+        if settingsManager.settings.aiBackend == .openClaw,
+           let website = directOpenClawWebsiteRequest(command) {
+            do {
+                try await OpenClawService.shared.openWebsiteDirectly(urlString: website.url)
+                let confirmation = "Abri \(website.label) no seu computador."
+                aiTranscript = confirmation
+                speakResponse(confirmation)
+                return
+            } catch {
+                DiagnosticLogger.shared.log(
+                    "OpenClaw",
+                    "Direct PC action unavailable; falling back to agent: \(error.localizedDescription)"
+                )
+            }
+        }
+
         // Check if this is a vision-related command
         // Keywords for "take a photo" - capture and send to OpenClaw
         let photoKeywords = ["take a photo", "take a picture", "take photo", "take picture",
@@ -1150,6 +1170,26 @@ final class VoiceAgentViewModel: ObservableObject {
             errorMessage = "Failed to send command: \(error.localizedDescription)"
             agentState = isSessionActive ? .listening : .idle
         }
+    }
+
+    /// Narrow deterministic parser for direct PC website actions. Keep this intentionally
+    /// conservative: everything else remains an agent request. More sites/actions can be added once
+    /// their OpenClaw tool schemas are validated on the user's runtime.
+    private func directOpenClawWebsiteRequest(_ command: String) -> (url: String, label: String)? {
+        let n = command
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+
+        let asksOpen = ["abra", "abrir", "abre", "open"].contains { n.contains($0) }
+        let targetsPC = ["computador", "meu pc", "no pc", "computer"].contains { n.contains($0) }
+        guard asksOpen, targetsPC else { return nil }
+
+        if n.contains("youtube") {
+            return ("https://www.youtube.com", "o YouTube")
+        }
+        return nil
     }
 
     // MARK: - Live Video Mode

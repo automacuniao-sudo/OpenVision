@@ -355,6 +355,37 @@ final class OpenClawService: ObservableObject {
         startTurnWatchdog()
     }
 
+    /// Invoke OpenClaw's Gateway tool directly, bypassing the agent/model turn. This is used
+    /// only for deterministic explicit PC actions, so provider quota (429) cannot block them.
+    /// Gateway policy remains authoritative: unavailable/denied tools return an error and caller
+    /// falls back to the normal agent path.
+    func openWebsiteDirectly(urlString: String) async throws {
+        guard connectionState.isUsable else { throw AIBackendError.notConnected }
+        guard let url = URL(string: urlString), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            throw AIBackendError.requestFailed("Invalid website URL")
+        }
+
+        let params: [String: Any] = [
+            "name": "browser",
+            "args": [
+                "action": "open",
+                "url": url.absoluteString,
+                "profile": "openclaw",
+                "target": "host",
+            ],
+            "sessionKey": Self.sessionKey,
+            "idempotencyKey": UUID().uuidString,
+        ]
+        DiagnosticLogger.shared.log("OpenClaw", "Direct tools.invoke browser open host requested")
+        let response = try await sendRequest(method: .toolsInvoke, params: params)
+        guard response.ok else {
+            let message = response.error?.message ?? response.error?.code ?? "browser tool unavailable"
+            DiagnosticLogger.shared.log("OpenClaw", "Direct tools.invoke rejected: \(message)")
+            throw AIBackendError.requestFailed(message)
+        }
+        DiagnosticLogger.shared.log("OpenClaw", "Direct tools.invoke browser open SUCCESS")
+    }
+
     func cancelRequest() {
         guard connectionState.isUsable else { return }
         Task { [weak self] in

@@ -1,3 +1,12 @@
+
+## Build 35 — deterministic grounding + direct OpenClaw PC actions
+- Conversation runtime intentionally unchanged from Build 34.
+- Added `current_datetime`: authoritative iPhone-local clock for today/time/weekday/relative dates.
+- Gemini must use `current_datetime` instead of internal/server/UTC date memory.
+- Current/time-sensitive web searches now run raw Tavily Advanced + DuckDuckGo evidence in parallel; Tavily synthesized answer is disabled for current facts.
+- Added `last_search_sources` + provenance store so source/link follow-ups cannot legitimately invent Gazeta/URLs.
+- Exact sports facts are instructed to answer only from returned evidence and admit insufficient/conflicting evidence instead of guessing.
+- Added OpenClaw Gateway `tools.invoke` support for deterministic PC actions. `open YouTube on my computer` invokes the browser tool directly on host, bypassing provider model quota; denied/unavailable browser falls back to agent.
 # Projeto JARVIS build notes
 
 ## Build 23

@@ -55,6 +55,13 @@ struct WebSearchTool: NativeTool {
                     "Structured sports hit provider=ESPN query=\(searchQuery)"
                 )
             }
+            await MainActor.run {
+                WebSearchEvidenceStore.shared.record(
+                    query: searchQuery,
+                    provider: "ESPN estruturado",
+                    result: structuredSports
+                )
+            }
             return Self.wrapResult(
                 structuredSports,
                 query: searchQuery,
@@ -64,9 +71,12 @@ struct WebSearchTool: NativeTool {
         }
 
         let provider = await MainActor.run {
-            SettingsManager.shared.settings.tavilyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "DuckDuckGo"
-                : "Tavily→DuckDuckGo"
+            let hasTavily = !SettingsManager.shared.settings.tavilyAPIKey
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            if Self.isTimeSensitiveSearch(searchQuery), hasTavily {
+                return "Tavily + DuckDuckGo (evidência paralela)"
+            }
+            return hasTavily ? "Tavily→DuckDuckGo" : "DuckDuckGo"
         }
         await MainActor.run {
             DiagnosticLogger.shared.log(
@@ -87,6 +97,7 @@ struct WebSearchTool: NativeTool {
 
         await MainActor.run {
             DiagnosticLogger.shared.log("WebSearch", "Search completed provider=\(provider) chars=\(result.count)")
+            WebSearchEvidenceStore.shared.record(query: searchQuery, provider: provider, result: result)
         }
 
         return Self.wrapResult(result, query: searchQuery, provider: provider, context: dateContext)
@@ -174,6 +185,15 @@ struct WebSearchTool: NativeTool {
             .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func isTimeSensitiveSearch(_ query: String) -> Bool {
+        let n = normalizeForIntent(query)
+        return [
+            "hoje", "ontem", "amanha", "agora", "atual", "recente", "ultimo", "proximo",
+            "placar", "resultado", "jogo", "partida", "noticia", "preco", "cotacao",
+            "today", "yesterday", "tomorrow", "latest", "next", "score", "current", "recent"
+        ].contains { n.contains($0) }
     }
 
     // MARK: - Deterministic local date grounding

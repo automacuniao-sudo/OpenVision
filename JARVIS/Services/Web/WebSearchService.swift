@@ -18,35 +18,60 @@ enum WebSearchService {
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .isEmpty
         }
-
-        if let tavily = await tavilySearch(trimmed), !tavily.isEmpty {
-            await diagnostic("Tavily SUCCESS chars=\(tavily.count) query=\(trimmed)")
-            return tavily
-        }
-
-        if tavilyConfigured {
-            await diagnostic("Tavily unavailable -> falling back to DuckDuckGo query=\(trimmed)")
-        }
-
         let timeSensitive = isTimeSensitiveQuery(trimmed)
+
+        // Current facts get two independent retrieval lanes. DuckDuckGo starts immediately while
+        // Tavily runs in parallel, so validation does not add their latencies together. Crucially,
+        // Tavily's model-generated `answer` is disabled here: Gemini receives raw source evidence,
+        // not a second AI's synthesis of potentially stale snippets.
         if timeSensitive {
-            let html = await htmlResults(trimmed)
-            if !html.isEmpty {
-                await diagnostic("DuckDuckGo HTML SUCCESS chars=\(html.count) query=\(trimmed)")
-                return html
+            async let ddgTask = htmlResults(trimmed)
+            let tavily: String?
+            if tavilyConfigured {
+                tavily = await tavilySearch(
+                    trimmed,
+                    searchDepth: "advanced",
+                    maxResults: 7,
+                    includeAnswer: false
+                )
+            } else {
+                tavily = nil
             }
+            let ddg = await ddgTask
+
+            var blocks: [String] = []
+            if let tavily, !tavily.isEmpty {
+                blocks.append("EVIDÊNCIA TAVILY (resultados brutos, sem resposta sintetizada):\n\(tavily)")
+            }
+            if !ddg.isEmpty {
+                blocks.append("EVIDÊNCIA DUCKDUCKGO (fonte independente):\n\(ddg)")
+            }
+            if !blocks.isEmpty {
+                let combined = String(blocks.joined(separator: "\n\n").prefix(6500))
+                await diagnostic("Current search evidence lanes=\(blocks.count) chars=\(combined.count) query=\(trimmed)")
+                return combined
+            }
+
+            // Instant Answer is a last retrieval fallback only; it is never mixed with model memory.
             if let instant = await instantAnswer(trimmed), !instant.isEmpty {
-                await diagnostic("DuckDuckGo Instant Answer SUCCESS chars=\(instant.count) query=\(trimmed)")
+                await diagnostic("DuckDuckGo Instant Answer fallback SUCCESS chars=\(instant.count) query=\(trimmed)")
                 return instant
             }
             return ""
         }
 
+        // Stable/general queries keep the low-latency existing path.
+        if let tavily = await tavilySearch(trimmed), !tavily.isEmpty {
+            await diagnostic("Tavily SUCCESS chars=\(tavily.count) query=\(trimmed)")
+            return tavily
+        }
+        if tavilyConfigured {
+            await diagnostic("Tavily unavailable -> falling back to DuckDuckGo query=\(trimmed)")
+        }
         if let instant = await instantAnswer(trimmed), !instant.isEmpty {
             await diagnostic("DuckDuckGo Instant Answer SUCCESS chars=\(instant.count) query=\(trimmed)")
             return instant
         }
-
         let html = await htmlResults(trimmed)
         if !html.isEmpty {
             await diagnostic("DuckDuckGo HTML SUCCESS chars=\(html.count) query=\(trimmed)")
@@ -105,7 +130,12 @@ enum WebSearchService {
         }
     }
 
-    private static func tavilySearch(_ query: String) async -> String? {
+    private static func tavilySearch(
+        _ query: String,
+        searchDepth: String = "basic",
+        maxResults: Int = 5,
+        includeAnswer: Bool = true
+    ) async -> String? {
         let key = await MainActor.run {
             SettingsManager.shared.settings.tavilyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -114,17 +144,17 @@ enum WebSearchService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 12
+        request.timeoutInterval = searchDepth == "advanced" ? 15 : 12
         let body: [String: Any] = [
             "api_key": key,
             "query": query,
-            "search_depth": "basic",
-            "max_results": 5,
-            "include_answer": true
+            "search_depth": searchDepth,
+            "max_results": maxResults,
+            "include_answer": includeAnswer
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
 
-        await diagnostic("Tavily request started query=\(query)")
+        await diagnostic("Tavily request started depth=\(searchDepth) answer=\(includeAnswer) query=\(query)")
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
             guard let http = response as? HTTPURLResponse else {
@@ -141,24 +171,30 @@ enum WebSearchService {
             }
 
             var parts: [String] = []
-            if let answer = json["answer"] as? String, !answer.isEmpty {
+            if includeAnswer, let answer = json["answer"] as? String, !answer.isEmpty {
                 parts.append("Resposta sintetizada Tavily: \(String(answer.prefix(700)))")
             }
 
             if let results = json["results"] as? [[String: Any]] {
-                for (index, result) in results.prefix(4).enumerated() {
+                for (index, result) in results.prefix(maxResults).enumerated() {
                     guard let content = (result["content"] as? String)?
                         .trimmingCharacters(in: .whitespacesAndNewlines), !content.isEmpty else { continue }
                     let title = (result["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "Resultado"
                     let sourceURL = (result["url"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                    let snippet = String(content.prefix(350))
+                    let published = (result["published_date"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let snippet = String(content.prefix(includeAnswer ? 350 : 650))
                     var line = "\(index + 1). \(title): \(snippet)"
-                    if !sourceURL.isEmpty { line += "\nFonte: \(sourceURL)" }
+                    if let published, !published.isEmpty { line += "
+Publicado/atualizado: \(published)" }
+                    if !sourceURL.isEmpty { line += "
+Fonte: \(sourceURL)" }
                     parts.append(line)
                 }
             }
 
-            let combined = String(parts.joined(separator: "\n").prefix(3200))
+            let limit = includeAnswer ? 3200 : 5200
+            let combined = String(parts.joined(separator: "
+").prefix(limit))
             guard !combined.isEmpty else {
                 await diagnostic("Tavily FAILED HTTP=200 but no usable content")
                 return nil

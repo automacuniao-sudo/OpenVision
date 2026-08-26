@@ -155,4 +155,5 @@ enum OpenClawMethod: String {
     case sendMessage = "chat.send"
     case cancelRun = "chat.abort"
     case toolResult = "tool.result"
+    case toolsInvoke = "tools.invoke"
 }
