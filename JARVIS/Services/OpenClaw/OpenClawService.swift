@@ -333,7 +333,6 @@ final class OpenClawService: ObservableObject {
 
         var params: [String: Any] = [
             "message": text,
-            "sessionKey": Self.sessionKey,
             "idempotencyKey": UUID().uuidString,
         ]
         if let imageData {
