@@ -119,3 +119,11 @@
 - Gemini Live system instruction now defaults replies to Brazilian Portuguese unless another language is explicitly requested.
 - Fixed Voice Control > Auto-End Timeout so the configured value is actually used; Never (0) disables the app-side silence timer.
 - App build number is 13.
+
+
+## Build 32 — voice/session stability
+- Prevents Apple Speech wake-listener recovery from starting while direct Gemini PCM owns the microphone.
+- Prevents background lifecycle cleanup from disconnecting an active direct-Gemini voice session behind the ViewModel.
+- Allows explicit “Ok Jarvis” to recover a stuck/slow processing turn and makes OpenClaw processing/tool work interruptible.
+- Grounds “today” in the iPhone local civil date/time instead of an ambiguous UTC interpretation.
+- Deduplicates repeated OpenClaw provider/rate-limit error events and clears tool state cleanly.

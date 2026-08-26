@@ -350,6 +350,9 @@ final class VoiceAgentViewModel: ObservableObject {
         directGeminiTimeoutTask?.cancel()
         directGeminiAwaitingNewInput = true
 
+        // Direct Gemini streams PCM continuously. Mark microphone ownership BEFORE stopping the
+        // wake recognizer so scene-activation recovery cannot race in and start Apple Speech again.
+        voiceCommandService.isWakeRecoverySuppressed = true
         if voiceCommandService.isListening {
             voiceCommandService.stopListening()
         }
@@ -366,6 +369,7 @@ final class VoiceAgentViewModel: ObservableObject {
         } catch {
             audioCapture.onAudioCaptured = nil
             isDirectGeminiVoiceMode = false
+            voiceCommandService.isWakeRecoverySuppressed = false
             if settingsManager.settings.wakeWordEnabled,
                voiceCommandService.authorizationStatus == .authorized,
                !voiceCommandService.isListening {
@@ -382,6 +386,7 @@ final class VoiceAgentViewModel: ObservableObject {
         audioCapture.stopCapture()
         audioCapture.onAudioCaptured = nil
         isDirectGeminiVoiceMode = false
+        voiceCommandService.isWakeRecoverySuppressed = false
         directGeminiAwaitingNewInput = true
         DiagnosticLogger.shared.log("Gemini", "Direct microphone PCM streaming stopped")
     }
@@ -640,6 +645,10 @@ final class VoiceAgentViewModel: ObservableObject {
                 || KokoroTTSService.shared.isSpeaking
                 || GeminiLiveService.shared.isModelSpeaking
                 || GeminiLiveService.shared.isProcessing
+                || OpenClawService.shared.isProcessing
+                || OpenClawService.shared.isToolRunning
+                || self.agentState == .thinking
+                || self.agentState == .toolRunning
                 || self.audioPlayback.isPlaying
         }
 
@@ -918,6 +927,10 @@ final class VoiceAgentViewModel: ObservableObject {
     private func startWakeWordListening() {
         guard settingsManager.settings.wakeWordEnabled else { return }
         guard voiceCommandService.authorizationStatus == .authorized else { return }
+        guard !voiceCommandService.isWakeRecoverySuppressed else {
+            DiagnosticLogger.shared.log("Voice", "Wake listener start skipped: direct Gemini owns microphone")
+            return
+        }
 
         // Configure audio for glasses before starting to listen
         configureAudioForGlasses()

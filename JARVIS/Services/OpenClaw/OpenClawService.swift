@@ -73,6 +73,8 @@ final class OpenClawService: ObservableObject {
     private enum PartialResponseSource { case agent, chat }
     private var partialResponseSource: PartialResponseSource?
     private var turnWatchdogTask: Task<Void, Never>?
+    private var lastProviderErrorSpokenAt = Date.distantPast
+    private var lastProviderErrorSpokenText = ""
 
     private static var sessionKey = "jarvis-\(UUID().uuidString.prefix(8))"
 
@@ -324,6 +326,8 @@ final class OpenClawService: ObservableObject {
         isProcessing = true
         accumulatedResponse = ""
         partialResponseSource = nil
+        lastProviderErrorSpokenAt = .distantPast
+        lastProviderErrorSpokenText = ""
         turnWatchdogTask?.cancel()
         onProcessingChanged?(true)
 
@@ -564,16 +568,27 @@ final class OpenClawService: ObservableObject {
                 // Flush the final streamed utterance before VoiceAgent observes processing=false.
                 onProcessingChanged?(false)
             case "error":
+                let message = payload["errorMessage"]?.stringValue ?? "OpenClaw error"
+                let friendly = friendlyErrorMessage(for: message)
+                let now = Date()
+                if friendly == lastProviderErrorSpokenText,
+                   now.timeIntervalSince(lastProviderErrorSpokenAt) < 2.0 {
+                    DiagnosticLogger.shared.log("OpenClaw", "Duplicate provider error ignored")
+                    return
+                }
+                lastProviderErrorSpokenText = friendly
+                lastProviderErrorSpokenAt = now
                 turnWatchdogTask?.cancel()
                 turnWatchdogTask = nil
                 activeRunId = nil
                 isProcessing = false
-                let message = payload["errorMessage"]?.stringValue ?? "OpenClaw error"
-                let friendly = friendlyErrorMessage(for: message)
+                isToolRunning = false
+                currentToolName = nil
                 lastError = friendly
                 DiagnosticLogger.shared.log("OpenClaw", "Provider error suppressed: \(message)")
                 accumulatedResponse = ""
                 partialResponseSource = nil
+                onToolStatusChanged?(nil, false)
                 onAgentMessage?(friendly)
                 onProcessingChanged?(false)
             case "aborted":

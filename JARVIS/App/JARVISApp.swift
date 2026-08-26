@@ -72,6 +72,7 @@ struct JARVISApp: App {
                 // the user is not in an active turn. Keep the always-on Apple wake listener, but
                 // close an IDLE Gemini connection. The next captured command reconnects on demand.
                 if phase == .background,
+                   !VoiceCommandService.shared.isWakeRecoverySuppressed,
                    !GeminiLiveService.shared.isProcessing,
                    !GeminiLiveService.shared.isModelSpeaking,
                    GeminiLiveService.shared.connectionState.isUsable {
@@ -87,6 +88,7 @@ struct JARVISApp: App {
                 if phase == .active,
                    SettingsManager.shared.settings.wakeWordEnabled,
                    VoiceCommandService.shared.authorizationStatus == .authorized,
+                   !VoiceCommandService.shared.isWakeRecoverySuppressed,
                    !VoiceCommandService.shared.isListening {
                     try? AudioSessionManager.shared.configureForPhone()
                     try? VoiceCommandService.shared.startListening()

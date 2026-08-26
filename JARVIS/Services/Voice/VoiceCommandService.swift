@@ -55,6 +55,10 @@ final class VoiceCommandService: ObservableObject {
     /// Returns true when the current backend can be interrupted (speaking OR processing/thinking).
     var shouldAllowInterrupt: (() -> Bool)?
 
+    /// True while Gemini owns the microphone as a direct PCM stream. App/lifecycle recovery paths
+    /// must not start a second Apple Speech recognizer while this flag is set.
+    var isWakeRecoverySuppressed: Bool = false
+
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "pt-BR"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -167,6 +171,10 @@ final class VoiceCommandService: ObservableObject {
     }
 
     func startListening() throws {
+        guard !isWakeRecoverySuppressed else {
+            DiagnosticLogger.shared.log("Voice", "Recognizer start skipped: direct Gemini owns microphone")
+            return
+        }
         guard authorizationStatus == .authorized else {
             throw VoiceCommandError.notAuthorized
         }
@@ -495,8 +503,19 @@ final class VoiceCommandService: ObservableObject {
             }
 
         case .processing:
+            // A bare explicit wake phrase must always be able to recover a stuck/slow turn. The
+            // previous implementation required a replacement command after the wake phrase, so
+            // saying only "Ok Jarvis" while OpenClaw/Gemini was processing did nothing.
+            let explicitWake = isExplicitWakePhrase(transcription)
             let allowInterrupt = shouldAllowInterrupt?() ?? false
-            guard allowInterrupt else { return }
+            guard allowInterrupt || explicitWake else { return }
+
+            if explicitWake && extractCommandAfterWakeWord(transcription).isEmpty {
+                DiagnosticLogger.shared.log("Voice", "Explicit wake recovered processing state")
+                onInterruption?()
+                handleWakeWordDetected()
+                return
+            }
 
             if isStopPhrase(transcription) {
                 print("[VoiceCommand] Stop phrase during processing/TTS — halting")
@@ -626,6 +645,15 @@ final class VoiceCommandService: ObservableObject {
             }
         }
         return false
+    }
+
+    /// Strong wake forms used when a turn is already processing. Deliberately excludes the
+    /// bare word "Jarvis" so the assistant's own speech cannot easily self-trigger recovery.
+    private func isExplicitWakePhrase(_ text: String) -> Bool {
+        let lower = text.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\r,.:;!?-–—"))
+        let explicit = ["ok jarvis", "okay jarvis", "o.k. jarvis", "o k jarvis", "hey jarvis"]
+        return explicit.contains { lower == $0 || lower.hasPrefix($0 + " ") }
     }
 
     private func detectWakeWord(in text: String, bypassCooldown: Bool = false) -> Bool {

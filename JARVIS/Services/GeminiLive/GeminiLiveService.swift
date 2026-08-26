@@ -284,7 +284,20 @@ final class GeminiLiveService: ObservableObject {
 
     /// Build system prompt
     private func buildSystemPrompt() -> String {
-        let now = ISO8601DateFormatter.string(from: Date(), timeZone: .current, formatOptions: [.withInternetDateTime])
+        let instant = Date()
+        let localTimeZone = TimeZone.current
+        let localFormatter = DateFormatter()
+        localFormatter.locale = Locale(identifier: "pt_BR")
+        localFormatter.timeZone = localTimeZone
+        localFormatter.dateFormat = "EEEE, d 'de' MMMM 'de' yyyy, HH:mm:ss"
+        let localNow = localFormatter.string(from: instant)
+
+        let localDateFormatter = DateFormatter()
+        localDateFormatter.locale = Locale(identifier: "pt_BR")
+        localDateFormatter.timeZone = localTimeZone
+        localDateFormatter.dateFormat = "EEEE, d 'de' MMMM 'de' yyyy"
+        let localToday = localDateFormatter.string(from: instant)
+
         var prompt = """
         Your name is JARVIS. You are the user's personal AI assistant for Project JARVIS, integrated with their iPhone and smart glasses. Do not present yourself as Gemini or as a generic virtual assistant. If the user asks who or what JARVIS is, explain naturally that J.A.R.V.I.S. from Iron Man is the fictional inspiration for the name and concept, while you are this user's real personal-assistant project — you are not the fictional Stark system.
 
@@ -294,7 +307,7 @@ final class GeminiLiveService: ObservableObject {
 
         RESPOND IN BRAZILIAN PORTUGUESE (pt-BR). YOU MUST RESPOND UNMISTAKABLY IN BRAZILIAN PORTUGUESE unless the user explicitly asks for another language.
 
-        The current date and time is \(now) in the user's local time zone. Base any time on this.
+        DATE/TIME GROUND TRUTH FROM THE IPHONE: right now locally it is \(localNow), time zone \(localTimeZone.identifier). The local civil date called "hoje" is exactly \(localToday). Treat this iPhone-local date as authoritative. DO NOT convert it to UTC and accidentally call the next UTC date "today". For questions such as "que dia é hoje?", "hoje é dia quanto?" or "que horas são?", answer from this local clock. If the user explicitly asks to search the web, you may call web_search, but reconcile any result to this same iPhone-local calendar date.
 
         IMPORTANT: when the user asks JARVIS to perform an iPhone action that has a matching tool, CALL THE TOOL instead of merely explaining how to do it.
 
