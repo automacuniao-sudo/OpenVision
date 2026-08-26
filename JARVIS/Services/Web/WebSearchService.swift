@@ -184,17 +184,14 @@ enum WebSearchService {
                     let published = (result["published_date"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
                     let snippet = String(content.prefix(includeAnswer ? 350 : 650))
                     var line = "\(index + 1). \(title): \(snippet)"
-                    if let published, !published.isEmpty { line += "
-Publicado/atualizado: \(published)" }
-                    if !sourceURL.isEmpty { line += "
-Fonte: \(sourceURL)" }
+                    if let published, !published.isEmpty { line += "\nPublicado/atualizado: \(published)" }
+                    if !sourceURL.isEmpty { line += "\nFonte: \(sourceURL)" }
                     parts.append(line)
                 }
             }
 
             let limit = includeAnswer ? 3200 : 5200
-            let combined = String(parts.joined(separator: "
-").prefix(limit))
+            let combined = String(parts.joined(separator: "\n").prefix(limit))
             guard !combined.isEmpty else {
                 await diagnostic("Tavily FAILED HTTP=200 but no usable content")
                 return nil

@@ -372,7 +372,6 @@ final class OpenClawService: ObservableObject {
                 "profile": "openclaw",
                 "target": "host",
             ],
-            "sessionKey": Self.sessionKey,
             "idempotencyKey": UUID().uuidString,
         ]
         DiagnosticLogger.shared.log("OpenClaw", "Direct tools.invoke browser open host requested")
