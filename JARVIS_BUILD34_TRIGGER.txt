@@ -1,0 +1,1 @@
+Build 34 final compile trigger — Gemini wake handoff + OpenClaw turn commit fixes.
