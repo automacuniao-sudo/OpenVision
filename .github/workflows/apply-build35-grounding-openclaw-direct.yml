@@ -1,0 +1,34 @@
+name: Apply Build 35 grounding + OpenClaw direct
+
+on:
+  push:
+    branches: [jarvis-dev]
+    paths:
+      - '.github/patches/build35-grounding-openclaw-direct.py'
+      - '.github/workflows/apply-build35-grounding-openclaw-direct.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: jarvis-dev
+          fetch-depth: 0
+      - name: Apply Build 35 patch
+        run: python3 .github/patches/build35-grounding-openclaw-direct.py
+      - name: Commit changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add JARVIS project.yml JARVIS_BUILD_NOTES.md
+          if git diff --cached --quiet; then
+            echo 'No changes to commit'
+          else
+            git commit -m 'Build 35: deterministic grounding and direct OpenClaw PC actions'
+            git push origin HEAD:jarvis-dev
+          fi
