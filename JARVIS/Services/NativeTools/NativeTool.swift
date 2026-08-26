@@ -31,14 +31,39 @@ extension NativeTool {
         ]
     }
 
-    /// Gemini function declaration — same fields as OpenAI's inner `function` object, minus the
-    /// `{type:"function"}` wrapper. Gemini nests these under `tools: [{ functionDeclarations: [...] }]`.
+    /// Gemini's `parameters` field is an OpenAPI-style Schema, not arbitrary JSON Schema.
+    /// Some tools intentionally use JSON-Schema-only keywords (for example
+    /// `additionalProperties: false`) for OpenAI strictness. Passing those keywords through
+    /// unchanged can make Gemini Live reject the whole setup and close the WebSocket before
+    /// `setupComplete`. Sanitize the schema centrally for Gemini while preserving the original
+    /// schema for OpenAI and other backends.
     var geminiDeclaration: [String: Any] {
         [
             "name": name,
             "description": description,
-            "parameters": parametersSchema
+            "parameters": Self.geminiCompatibleSchema(parametersSchema)
         ]
+    }
+
+    private static func geminiCompatibleSchema(_ value: [String: Any]) -> [String: Any] {
+        var sanitized: [String: Any] = [:]
+        for (key, rawValue) in value {
+            // `additionalProperties` belongs to JSON Schema / parametersJsonSchema. The Live
+            // session currently advertises declarations through FunctionDeclaration.parameters,
+            // whose Schema message does not accept this field.
+            if key == "additionalProperties" {
+                continue
+            }
+
+            if let nested = rawValue as? [String: Any] {
+                sanitized[key] = geminiCompatibleSchema(nested)
+            } else if let array = rawValue as? [[String: Any]] {
+                sanitized[key] = array.map { geminiCompatibleSchema($0) }
+            } else {
+                sanitized[key] = rawValue
+            }
+        }
+        return sanitized
     }
 }
 
