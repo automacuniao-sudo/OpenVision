@@ -59,6 +59,10 @@ final class VoiceCommandService: ObservableObject {
     /// must not start a second Apple Speech recognizer while this flag is set.
     var isWakeRecoverySuppressed: Bool = false
 
+    /// ChatGPT-style conversation lifecycle: after the initial wake word, silence is only an idle
+    /// pulse. It must NOT close the active conversation and require another wake phrase.
+    var persistentConversationMode: Bool = false
+
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "pt-BR"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -442,12 +446,29 @@ final class VoiceCommandService: ObservableObject {
 
         if hasSpokenThisTurn {
             print("[VoiceCommand] User is speaking, extending conversation")
-        } else {
-            print("[VoiceCommand] Conversation timeout - no speech detected")
-            DiagnosticLogger.shared.log("Voice", "Conversation timeout fired")
-            exitConversationMode()
-            onConversationTimeout?()
+            startConversationTimeout()
+            return
         }
+
+        if persistentConversationMode {
+            // Stay in the same recognition/session loop. Restarting recognition clears stale STT
+            // buffers while preserving the conversational state, just like a realtime voice call
+            // that remains open through silence.
+            DiagnosticLogger.shared.log("Voice", "Persistent conversation idle pulse; staying open")
+            currentTranscription = ""
+            lastSpeechRecognitionUpdateAt = nil
+            vadCommitPending = false
+            hasSpokenThisTurn = false
+            restartRecognition()
+            startConversationTimeout()
+            onConversationTimeout?()
+            return
+        }
+
+        print("[VoiceCommand] Conversation timeout - no speech detected")
+        DiagnosticLogger.shared.log("Voice", "Conversation timeout fired")
+        exitConversationMode()
+        onConversationTimeout?()
     }
 
     private func handleRecognitionResult(result: SFSpeechRecognitionResult?, error: Error?) {

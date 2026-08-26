@@ -127,3 +127,14 @@
 - Allows explicit “Ok Jarvis” to recover a stuck/slow processing turn and makes OpenClaw processing/tool work interruptible.
 - Grounds “today” in the iPhone local civil date/time instead of an ambiguous UTC interpretation.
 - Deduplicates repeated OpenClaw provider/rate-limit error events and clears tool state cleanly.
+
+
+## Build 33 — Conversation Runtime v2
+- Reworks voice lifecycle around a persistent conversation session inspired by ChatGPT Live / realtime-agent patterns.
+- One wake word opens the session; follow-up turns no longer require another wake after idle periods.
+- Direct Gemini voice no longer auto-ends after the per-turn conversation timeout.
+- Text backends (including OpenClaw) keep Apple STT conversation mode alive through idle pulses.
+- Gemini interruptions keep the same full-duplex session alive and reset turn bookkeeping instead of tearing down audio.
+- Gemini native tool calls expose a real tool-running state and execute inside the same live session.
+- Adds a 15-second silent-turn watchdog: reconnect with session resumption and replay the last transcript once if Gemini becomes silent.
+- If bounded Gemini recovery is exhausted, microphone ownership is atomically returned to the local wake listener so “Ok Jarvis” works again.

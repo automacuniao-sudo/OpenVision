@@ -19,6 +19,8 @@ final class GeminiLiveService: ObservableObject {
     @Published var connectionState: AIConnectionState = .disconnected
     @Published var isProcessing: Bool = false
     @Published var isModelSpeaking: Bool = false
+    @Published var isToolRunning: Bool = false
+    @Published var currentToolName: String?
     @Published var lastError: String?
 
     // MARK: - Configuration
@@ -44,6 +46,8 @@ final class GeminiLiveService: ObservableObject {
     var onTurnComplete: (() -> Void)?
     var onInputTranscription: ((String) -> Void)?
     var onOutputTranscription: ((String) -> Void)?
+    var onInterrupted: (() -> Void)?
+    var onToolStatusChanged: ((String?, Bool) -> Void)?
     var onConnectionStateChanged: ((AIConnectionState) -> Void)?
     var onDisconnected: (() -> Void)?
 
@@ -225,6 +229,8 @@ final class GeminiLiveService: ObservableObject {
 
         isSetupComplete = false
         isModelSpeaking = false
+        isToolRunning = false
+        currentToolName = nil
         pendingTurnComplete = false
         discardIncomingAudio = false
         ignoreNextTurnComplete = false
@@ -440,6 +446,14 @@ final class GeminiLiveService: ObservableObject {
         print("[GeminiLive] Interrupted")
     }
 
+    /// Rebuild the underlying Live WebSocket while preserving the latest session-resumption
+    /// handle. Used by the conversation watchdog when the transport is alive-looking but silent.
+    func recoverLiveSession(reason: String) async throws {
+        guard !intentionalDisconnect else { throw AIBackendError.notConnected }
+        DiagnosticLogger.shared.log("Gemini", "Conversation watchdog recovery requested: \(reason)")
+        try await reconnectImmediately(reason: reason)
+    }
+
     // MARK: - Send Video
 
     /// Send video frame to Gemini (throttled)
@@ -591,6 +605,7 @@ final class GeminiLiveService: ObservableObject {
             isProcessing = false
             fallbackAudioPlayback.stop()
             DiagnosticLogger.shared.log("Gemini", "Server content interrupted")
+            onInterrupted?()
         }
 
         // Model turn
@@ -737,11 +752,23 @@ final class GeminiLiveService: ObservableObject {
             return
         }
 
+        // Function calling in Gemini Live is synchronous: keep the realtime session open and
+        // mark the turn as busy until every tool result has been sent back to the same socket.
+        isProcessing = true
         var responses: [[String: Any]] = []
         for call in calls {
             guard let name = call["name"] as? String else { continue }
             let args = call["args"] as? [String: Any] ?? [:]
+            currentToolName = name
+            isToolRunning = true
+            onToolStatusChanged?(name, true)
+            DiagnosticLogger.shared.log("Gemini", "Tool running in persistent session: \(name)")
+
             let result = await NativeToolRegistry.shared.execute(name: name, args: args)
+
+            isToolRunning = false
+            currentToolName = nil
+            onToolStatusChanged?(name, false)
             var response: [String: Any] = ["name": name, "response": ["result": result]]
             if let id = call["id"] as? String { response["id"] = id }  // echo id so Gemini pairs the response
             responses.append(response)

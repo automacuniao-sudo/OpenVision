@@ -64,6 +64,7 @@ final class VoiceAgentViewModel: ObservableObject {
     private var isDirectGeminiVoiceMode = false
     private var directGeminiAwaitingNewInput = true
     private var directGeminiTimeoutTask: Task<Void, Never>?
+    private var directGeminiResponseWatchdogTask: Task<Void, Never>?
 
     /// History: true after a user command was recorded, until its reply is recorded. Keeps
     /// system utterances ("Live video mode active", error prompts) out of the History tab.
@@ -312,11 +313,14 @@ final class VoiceAgentViewModel: ObservableObject {
                 aiTranscript = ""
 
                 if settingsManager.settings.aiBackend == .geminiLive {
-                    // Normal Gemini voice is now true audio-to-audio after the local wake word.
+                    // Native full-duplex audio owns the conversation after the one-time wake word.
+                    voiceCommandService.persistentConversationMode = false
                     try startDirectGeminiVoiceMode()
                 } else {
-                    // Text backends keep Apple STT for command capture.
+                    // Text backends still use Apple STT, but the conversation itself is persistent:
+                    // silence no longer tears the session down and forces another wake phrase.
                     if voiceCommandService.authorizationStatus == .authorized {
+                        voiceCommandService.persistentConversationMode = true
                         if !voiceCommandService.isListening {
                             try? voiceCommandService.startListening()
                         }
@@ -382,6 +386,8 @@ final class VoiceAgentViewModel: ObservableObject {
     private func stopDirectGeminiVoiceMode() {
         directGeminiTimeoutTask?.cancel()
         directGeminiTimeoutTask = nil
+        directGeminiResponseWatchdogTask?.cancel()
+        directGeminiResponseWatchdogTask = nil
         guard isDirectGeminiVoiceMode || audioCapture.isCapturing else { return }
         audioCapture.stopCapture()
         audioCapture.onAudioCaptured = nil
@@ -392,26 +398,60 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     private func armDirectGeminiConversationTimeout() {
+        // Conversation Runtime v2 intentionally has no per-turn idle shutdown. ChatGPT-style voice
+        // is a call/session: after the initial wake word the mic remains owned by the realtime
+        // session until the user explicitly stops it, the UI stops it, or recovery is exhausted.
         directGeminiTimeoutTask?.cancel()
         directGeminiTimeoutTask = nil
-        let timeout = settingsManager.settings.conversationTimeout
-        guard timeout > 0, isDirectGeminiVoiceMode, isSessionActive else { return }
+        guard isDirectGeminiVoiceMode, isSessionActive else { return }
+        DiagnosticLogger.shared.log("Voice", "Direct Gemini persistent conversation active (idle auto-end disabled)")
+    }
 
-        directGeminiTimeoutTask = Task { [weak self] in
+    private func armDirectGeminiResponseWatchdog() {
+        directGeminiResponseWatchdogTask?.cancel()
+        directGeminiResponseWatchdogTask = nil
+        guard isDirectGeminiVoiceMode, isSessionActive else { return }
+
+        directGeminiResponseWatchdogTask = Task { [weak self] in
             do {
-                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+                try await Task.sleep(nanoseconds: 15_000_000_000)
             } catch {
                 return
             }
             guard let self, self.isDirectGeminiVoiceMode, self.isSessionActive else { return }
-            if self.geminiLive.isModelSpeaking || self.geminiLive.isProcessing {
-                self.armDirectGeminiConversationTimeout()
-                return
+            guard !self.geminiLive.isModelSpeaking,
+                  !self.geminiLive.isToolRunning else { return }
+
+            let retryText = self.userTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+            DiagnosticLogger.shared.log("Voice", "Gemini silent-turn watchdog fired; recovering live session")
+            do {
+                try await self.geminiLive.recoverLiveSession(reason: "15s without audio/tool progress")
+                // Session resumption preserves context, but the turn that froze may not be replayed.
+                // Re-submit its transcript once as text so the user is not left in dead silence.
+                if !retryText.isEmpty {
+                    try await self.geminiLive.sendText(retryText)
+                    DiagnosticLogger.shared.log("Voice", "Silent turn replayed after Gemini recovery")
+                }
+            } catch {
+                self.recoverDirectConversationToWake(reason: "Gemini recovery failed: \(error.localizedDescription)")
             }
-            DiagnosticLogger.shared.log("Voice", "Direct Gemini conversation timeout fired")
-            self.stopSession()
         }
-        DiagnosticLogger.shared.log("Voice", "Direct Gemini conversation auto-end armed for \(Int(timeout))s")
+    }
+
+    private func recoverDirectConversationToWake(reason: String) {
+        guard isDirectGeminiVoiceMode || voiceCommandService.isWakeRecoverySuppressed else { return }
+        DiagnosticLogger.shared.log("Voice", "Conversation runtime recovering to wake listener: \(reason)")
+        stopDirectGeminiVoiceMode()
+        voiceCommandService.persistentConversationMode = false
+        isSessionActive = false
+        agentState = .idle
+        currentToolName = nil
+
+        if settingsManager.settings.wakeWordEnabled,
+           voiceCommandService.authorizationStatus == .authorized,
+           !voiceCommandService.isListening {
+            startWakeWordListening()
+        }
     }
 
     private var shouldUseGeminiStreamingVoiceForOpenClaw: Bool {
@@ -499,6 +539,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
     func stopSession() {
         let wasDirectGeminiVoice = isDirectGeminiVoiceMode
+        voiceCommandService.persistentConversationMode = false
         if wasDirectGeminiVoice { stopDirectGeminiVoiceMode() }
 
         // If in live video mode, stop it first
@@ -565,6 +606,7 @@ final class VoiceAgentViewModel: ObservableObject {
     /// VoiceCommandService (so the stale transcript can't re-fire); here we just halt + end the turn.
     private func performFullStop() {
         let wasDirectGeminiVoice = isDirectGeminiVoiceMode
+        voiceCommandService.persistentConversationMode = false
         if wasDirectGeminiVoice { stopDirectGeminiVoiceMode() }
         ttsService.stop()
         geminiStreamingTTS.stop()
@@ -748,17 +790,17 @@ final class VoiceAgentViewModel: ObservableObject {
             }
         }
 
-        // Conversation timeout (user didn't speak after AI response)
+        // Idle pulse inside an already-open conversation. The service itself re-arms the
+        // recognizer when persistentConversationMode is enabled; never tear down the backend here.
         voiceCommandService.onConversationTimeout = { [weak self] in
             guard let self else { return }
-            // In live video mode, silence must not end the session — the .idle state handler
-            // re-arms conversation mode so the user can keep asking until they say "stop video".
             if self.isLiveVideoMode {
-                print("[VoiceAgent] Conversation timeout during live video — staying live")
+                print("[VoiceAgent] Conversation idle pulse during live video — staying live")
                 return
             }
-            print("[VoiceAgent] Conversation timeout - returning to idle")
-            self.stopSession()
+            guard self.isSessionActive, self.voiceCommandService.persistentConversationMode else { return }
+            self.agentState = .listening
+            DiagnosticLogger.shared.log("Voice", "Conversation idle pulse; session remains active")
         }
 
         // Setup AI service callbacks for responses
@@ -885,8 +927,6 @@ final class VoiceAgentViewModel: ObservableObject {
         // Gemini Live callbacks. Normal voice also uses them in direct PCM mode.
         GeminiLiveService.shared.onInputTranscription = { [weak self] (text: String) in
             guard let self, self.isDirectGeminiVoiceMode else { return }
-            self.directGeminiTimeoutTask?.cancel()
-            self.directGeminiTimeoutTask = nil
             if self.directGeminiAwaitingNewInput {
                 self.userTranscript = ""
                 self.aiTranscript = ""
@@ -894,17 +934,53 @@ final class VoiceAgentViewModel: ObservableObject {
                 self.directGeminiAwaitingNewInput = false
             }
             self.userTranscript += text
+            self.agentState = .listening
+            self.armDirectGeminiResponseWatchdog()
         }
 
         GeminiLiveService.shared.onOutputTranscription = { [weak self] (text: String) in
             guard let self else { return }
+            self.directGeminiResponseWatchdogTask?.cancel()
+            self.directGeminiResponseWatchdogTask = nil
             // Gemini sends outputAudioTranscription incrementally (often word/phrase fragments).
             // Preserve the full reply for the live UI and persisted History.
             self.aiTranscript += text
         }
 
+        GeminiLiveService.shared.onInterrupted = { [weak self] in
+            guard let self, self.isDirectGeminiVoiceMode else { return }
+            // The user's barge-in starts a new semantic turn immediately. Keep the same socket/mic;
+            // only reset transcript bookkeeping so the next utterance does not concatenate onto the
+            // previous turn.
+            self.directGeminiAwaitingNewInput = true
+            self.agentState = .listening
+            DiagnosticLogger.shared.log("Voice", "Gemini barge-in kept persistent conversation open")
+        }
+
+        GeminiLiveService.shared.onToolStatusChanged = { [weak self] (toolName: String?, running: Bool) in
+            guard let self, self.isDirectGeminiVoiceMode else { return }
+            self.currentToolName = running ? toolName : nil
+            if running {
+                self.directGeminiResponseWatchdogTask?.cancel()
+                self.directGeminiResponseWatchdogTask = nil
+                self.agentState = .toolRunning
+            } else if self.isSessionActive {
+                self.agentState = .thinking
+                self.armDirectGeminiResponseWatchdog()
+            }
+        }
+
+        GeminiLiveService.shared.onDisconnected = { [weak self] in
+            guard let self, self.isSessionActive, self.isDirectGeminiVoiceMode else { return }
+            // This callback is reached only after Gemini's bounded reconnect attempts are exhausted
+            // (intentional stop has already released direct mode). Never leave a dead mic owner.
+            self.recoverDirectConversationToWake(reason: "Gemini reconnect attempts exhausted")
+        }
+
         GeminiLiveService.shared.onTurnComplete = { [weak self] in
             guard let self else { return }
+            self.directGeminiResponseWatchdogTask?.cancel()
+            self.directGeminiResponseWatchdogTask = nil
             // A response that was explicitly stopped can still deliver a late server boundary.
             // Never reopen the microphone/conversation loop after the session was ended.
             guard self.isSessionActive || self.isLiveVideoMode else {
