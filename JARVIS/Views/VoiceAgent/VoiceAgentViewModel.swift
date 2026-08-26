@@ -194,13 +194,22 @@ final class VoiceAgentViewModel: ObservableObject {
                 agentState = .liveVideo
                 return
             }
+            // Direct Gemini deliberately stops Apple Speech when the realtime PCM stream takes
+            // ownership of the microphone. That stop emits `.idle`; it is a microphone handoff,
+            // NOT the end of the conversation. Build 33 still let the legacy idle observer race
+            // with startDirectGeminiVoiceMode(), which disconnected Gemini milliseconds after a
+            // successful wake connection. Suppression is set before stopListening(), so it is the
+            // authoritative handoff guard even before isDirectGeminiVoiceMode flips true.
+            if voiceCommandService.isWakeRecoverySuppressed || isDirectGeminiVoiceMode {
+                DiagnosticLogger.shared.log("Voice", "Ignored recognizer idle during direct Gemini mic handoff")
+                return
+            }
+
             // A real conversation end is the recognizer going idle *while we were listening*
             // for the user (silence timeout). An .idle in any other state (.connecting startup,
             // .thinking/.toolRunning command processing, .speaking a reply) is a transient from
             // our own stop/restart — e.g. the camera capture restarts the recognizer mid-command
-            // — and must NOT tear the session down. (This is what left the wake word dead after a
-            // face/camera command: the restart flipped to .idle during .thinking and killed the
-            // session, so the post-reply audio rebuild never ran.)
+            // — and must NOT tear the session down.
             if isSessionActive && agentState == .listening {
                 print("[VoiceAgent] Voice service idle, stopping session")
                 isSessionActive = false

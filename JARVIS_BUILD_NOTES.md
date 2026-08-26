@@ -138,3 +138,11 @@
 - Gemini native tool calls expose a real tool-running state and execute inside the same live session.
 - Adds a 15-second silent-turn watchdog: reconnect with session resumption and replay the last transcript once if Gemini becomes silent.
 - If bounded Gemini recovery is exhausted, microphone ownership is atomically returned to the local wake listener so “Ok Jarvis” works again.
+
+
+## Build 34 — Wake handoff + OpenClaw turn commit
+
+- Fixes a Build 33 race where the intentional Apple Speech -> Gemini PCM microphone handoff emitted `.idle` and the legacy observer immediately disconnected the just-connected Gemini Live session.
+- In Conversation Mode, JARVIS/wake words are stripped only when they are at the beginning of an utterance. Phrases ending in “Jarvis” no longer collapse to an empty command.
+- VAD is now primary but not exclusive: every STT partial arms a conservative endpoint fallback, preventing OpenClaw/text backends from staying on Listening forever when Silero misses `speechEnd`.
+- Search/grounding behavior is intentionally unchanged for the next dedicated research pass.

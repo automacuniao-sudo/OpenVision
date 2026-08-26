@@ -499,12 +499,16 @@ final class VoiceCommandService: ObservableObject {
             }
 
         case .listening, .conversationMode:
-            var command = transcription
-            for phrase in jarvisWakeVariants {
-                if let range = command.lowercased().range(of: phrase) {
-                    command = String(command[range.upperBound...]).trimmingCharacters(in: .whitespaces)
-                    break
-                }
+            // The wake marker is removable only when it is actually a PREFIX. Build 33 searched
+            // anywhere in the sentence, so a natural phrase such as “Você está me ouvindo Jarvis?”
+            // became an empty command and remained stuck on Listening forever. Mid/end-sentence
+            // mentions of Jarvis are ordinary user content and must be preserved.
+            var command = transcription.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowerCommand = command.lowercased()
+            for phrase in jarvisWakeVariants where lowerCommand.hasPrefix(phrase) {
+                command = String(command.dropFirst(phrase.count))
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " ,.:;!?-–—"))
+                break
             }
 
             currentTranscription = command
@@ -747,14 +751,24 @@ final class VoiceCommandService: ObservableObject {
         onCommandCaptured?(command)
     }
 
-    /// Fallback endpointing only. When acoustic VAD is healthy, speechEnd owns turn commit.
+    /// Hybrid endpointing. Acoustic VAD is the fast primary signal, but it must never be the
+    /// only path to committing a turn: room noise, Bluetooth routes, or a missed Silero speechEnd
+    /// can otherwise leave Conversation Mode on Listening forever. Every fresh STT partial arms a
+    /// conservative lexical watchdog; a real VAD speechEnd replaces it with the shorter VAD grace.
     private func resetSilenceTimer() {
-        guard !speechDetector.isAvailable else { return }
         silenceTimer?.invalidate()
-        let timeout = TurnEndpointing.silenceTimeout(for: currentTranscription)
+        let lexicalTimeout = TurnEndpointing.silenceTimeout(for: currentTranscription)
+        let timeout = speechDetector.isAvailable ? max(1.25, lexicalTimeout) : lexicalTimeout
         silenceTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
             Task { @MainActor in
-                self?.handleSilenceTimeout()
+                guard let self else { return }
+                if self.speechDetector.isAvailable {
+                    DiagnosticLogger.shared.log(
+                        "VAD",
+                        "speechEnd fallback timer committed turn after \(Int(timeout * 1000))ms"
+                    )
+                }
+                self.handleSilenceTimeout()
             }
         }
     }
