@@ -1,0 +1,31 @@
+name: Apply Build 34 wake + OpenClaw endpointing
+
+on:
+  push:
+    branches: [jarvis-dev]
+    paths:
+      - '.github/patches/build34-wake-openclaw-endpointing.py'
+      - '.github/workflows/apply-build34-wake-openclaw-endpointing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: jarvis-dev
+          fetch-depth: 0
+      - name: Apply Build 34 patch
+        run: python3 .github/patches/build34-wake-openclaw-endpointing.py
+      - name: Commit changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add JARVIS/Views/VoiceAgent/VoiceAgentViewModel.swift JARVIS/Services/Voice/VoiceCommandService.swift project.yml JARVIS_BUILD_NOTES.md
+          git diff --cached --quiet && exit 0
+          git commit -m 'Build 34: fix Gemini wake handoff and OpenClaw turn commit'
+          git push origin jarvis-dev
