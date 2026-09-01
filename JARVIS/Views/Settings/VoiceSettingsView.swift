@@ -6,6 +6,8 @@ import AVFoundation
 
 struct VoiceSettingsView: View {
     @EnvironmentObject var settingsManager: SettingsManager
+    @State private var savedOwnerVoiceName: String?
+    @State private var showingForgetVoiceConfirmation = false
 
     private var selectedVoiceName: String {
         guard let identifier = settingsManager.settings.selectedVoiceIdentifier,
@@ -59,6 +61,55 @@ struct VoiceSettingsView: View {
                 Text("Microphone")
             } footer: {
                 Text("When on, voice input uses the glasses' Bluetooth microphone when it is available and falls back to the iPhone microphone automatically.")
+            }
+
+            Section {
+                Toggle(isOn: Binding(
+                    get: { settingsManager.settings.voiceOwnerLockEnabled },
+                    set: { newValue in
+                        guard !newValue || SpeakerVerificationService.shared.hasOwnerProfile else { return }
+                        settingsManager.settings.voiceOwnerLockEnabled = newValue
+                        settingsManager.saveNow()
+                    }
+                )) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Owner Voice Lock (Beta)")
+                        Text(savedOwnerVoiceName.map { "Only accept commands matching \($0)'s saved voice" }
+                             ?? "Enroll your voice first by saying “cadastre minha voz”")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .disabled(!SpeakerVerificationService.shared.hasOwnerProfile)
+
+                if let savedOwnerVoiceName {
+                    HStack {
+                        Text("Saved Voice")
+                        Spacer()
+                        Text(savedOwnerVoiceName).foregroundColor(.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Similarity threshold: \(settingsManager.settings.voiceOwnerSimilarityThreshold, specifier: "%.2f")")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        Slider(
+                            value: $settingsManager.settings.voiceOwnerSimilarityThreshold,
+                            in: 0.50...0.85,
+                            step: 0.01
+                        )
+                    }
+
+                    Button(role: .destructive) {
+                        showingForgetVoiceConfirmation = true
+                    } label: {
+                        Label("Forget Saved Voice", systemImage: "person.wave.2.fill")
+                    }
+                }
+            } header: {
+                Text("Voice Security")
+            } footer: {
+                Text("Speaker verification runs locally with a CAM++ voice embedding. When enabled, each STT command is checked before being sent to the AI. This is useful for owner-only control but is not anti-replay authentication: a high-quality recording of your voice may still fool it.")
             }
 
             Section {
@@ -158,6 +209,24 @@ struct VoiceSettingsView: View {
         }
         .navigationTitle("JARVIS Voice")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            savedOwnerVoiceName = SpeakerVerificationService.shared.ownerProfileName
+        }
+        .confirmationDialog(
+            "Forget saved owner voice?",
+            isPresented: $showingForgetVoiceConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Forget Voice", role: .destructive) {
+                SpeakerVerificationService.shared.forgetOwnerProfile()
+                settingsManager.settings.voiceOwnerLockEnabled = false
+                settingsManager.saveNow()
+                savedOwnerVoiceName = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("JARVIS will stop using speaker verification until you enroll your voice again.")
+        }
     }
 
     private var samplePhrases: [String] {

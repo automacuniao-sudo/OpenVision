@@ -77,6 +77,7 @@ final class VoiceCommandService: ObservableObject {
     private var commandTimeoutTimer: Timer?
     private var conversationTimeoutTimer: Timer?
     private var wakeWordCooldownActive: Bool = false
+    private var speakerVerificationPending: Bool = false
 
     /// Silero VAD via FluidAudio. When available, this is the primary end-of-turn signal.
     private let speechDetector = SpeechActivityDetector()
@@ -126,6 +127,9 @@ final class VoiceCommandService: ObservableObject {
     private func setupSpeechDetector() {
         speechDetector.onSpeechStart = { [weak self] in
             guard let self else { return }
+            if self.state == .idle || self.state == .listening || self.state == .conversationMode {
+                SpeakerVerificationService.shared.resetRecentAudio()
+            }
             self.vadCommitPending = false
             self.silenceTimer?.invalidate()
             self.silenceTimer = nil
@@ -225,6 +229,7 @@ final class VoiceCommandService: ObservableObject {
         if let reason = OVCatchException({
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
                 self?.appendSafely(buffer, to: recognitionRequest)
+                SpeakerVerificationService.shared.feed(buffer: buffer)
                 detector.feed(buffer)
             }
         }) {
@@ -390,6 +395,7 @@ final class VoiceCommandService: ObservableObject {
         if let reason = OVCatchException({
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self] buffer, _ in
                 self?.appendSafely(buffer, to: recognitionRequest)
+                SpeakerVerificationService.shared.feed(buffer: buffer)
                 detector.feed(buffer)
             }
         }) {
@@ -495,7 +501,7 @@ final class VoiceCommandService: ObservableObject {
         case .idle:
             currentTranscription = transcription
             if detectWakeWord(in: transcription) {
-                handleWakeWordDetected()
+                requestWakeWordActivation()
             }
 
         case .listening, .conversationMode:
@@ -538,7 +544,7 @@ final class VoiceCommandService: ObservableObject {
             if explicitWake && extractCommandAfterWakeWord(transcription).isEmpty {
                 DiagnosticLogger.shared.log("Voice", "Explicit wake recovered processing state")
                 onInterruption?()
-                handleWakeWordDetected()
+                requestWakeWordActivation()
                 return
             }
 
@@ -702,6 +708,48 @@ final class VoiceCommandService: ObservableObject {
         return ""
     }
 
+    /// Verify the wake speaker locally before activation when Owner Voice Lock is enabled.
+    private func requestWakeWordActivation() {
+        guard !speakerVerificationPending else { return }
+
+        let settings = SettingsManager.shared.settings
+        guard settings.voiceOwnerLockEnabled else {
+            handleWakeWordDetected()
+            return
+        }
+
+        speakerVerificationPending = true
+        let sample = SpeakerVerificationService.shared.snapshotRecentAudio(maxSeconds: 4.0)
+        let threshold = Float(settings.voiceOwnerSimilarityThreshold)
+
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await SpeakerVerificationService.shared.verify(samples: sample, threshold: threshold)
+            self.speakerVerificationPending = false
+
+            if result.isMatch {
+                DiagnosticLogger.shared.log(
+                    "VoiceAuth",
+                    String(format: "Wake accepted score=%.3f threshold=%.3f", result.similarity ?? -1, threshold)
+                )
+                self.handleWakeWordDetected()
+            } else {
+                DiagnosticLogger.shared.log(
+                    "VoiceAuth",
+                    String(format: "Wake rejected score=%.3f threshold=%.3f reason=%@", result.similarity ?? -1, threshold, result.reason)
+                )
+                self.currentTranscription = ""
+                self.hasSpokenThisTurn = false
+                self.vadCommitPending = false
+                self.wakeWordCooldownActive = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                    self?.wakeWordCooldownActive = false
+                }
+                self.restartRecognition()
+            }
+        }
+    }
+
     private func handleWakeWordDetected() {
         print("[VoiceCommand] JARVIS wake word detected!")
         DiagnosticLogger.shared.log("Voice", "Wake word detected: \(wakeWord)")
@@ -713,6 +761,7 @@ final class VoiceCommandService: ObservableObject {
 
         state = .listening
         currentTranscription = ""
+        SpeakerVerificationService.shared.resetRecentAudio()
         lastSpeechRecognitionUpdateAt = nil
         vadCommitPending = false
         restartRecognition()
@@ -747,8 +796,43 @@ final class VoiceCommandService: ObservableObject {
         commandTimeoutTimer = nil
         currentTranscription = ""
 
+        let settings = SettingsManager.shared.settings
+        let mustVerifyOwner = settings.voiceOwnerLockEnabled
+        let sample = mustVerifyOwner
+            ? SpeakerVerificationService.shared.snapshotRecentAudio(maxSeconds: 6.0)
+            : []
+        let threshold = Float(settings.voiceOwnerSimilarityThreshold)
+
         restartRecognition()
-        onCommandCaptured?(command)
+
+        guard mustVerifyOwner else {
+            onCommandCaptured?(command)
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await SpeakerVerificationService.shared.verify(samples: sample, threshold: threshold)
+            if result.isMatch {
+                DiagnosticLogger.shared.log(
+                    "VoiceAuth",
+                    String(format: "Command accepted score=%.3f threshold=%.3f", result.similarity ?? -1, threshold)
+                )
+                self.onCommandCaptured?(command)
+            } else {
+                DiagnosticLogger.shared.log(
+                    "VoiceAuth",
+                    String(format: "Command rejected score=%.3f threshold=%.3f reason=%@", result.similarity ?? -1, threshold, result.reason)
+                )
+                self.currentTranscription = ""
+                self.hasSpokenThisTurn = false
+                self.vadCommitPending = false
+                self.state = self.persistentConversationMode
+                    ? .conversationMode
+                    : (self.isWakeWordEnabled ? .idle : .listening)
+                self.restartRecognition()
+            }
+        }
     }
 
     /// Hybrid endpointing. Acoustic VAD is the fast primary signal, but it must never be the

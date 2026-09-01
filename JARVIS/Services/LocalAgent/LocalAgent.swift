@@ -82,6 +82,9 @@ enum LocalAgent {
         - Note save: {"tool":"note","action":"save","content":"parked in lot B"}
         - Note search: {"tool":"note","action":"search","query":"parking"}
         - Copy text: {"tool":"copy_to_clipboard","text":"the text to copy"}
+        - Persistent memory: {"tool":"memory","action":"remember","key":"user_role","value":"criador do JARVIS"}
+        - Memory lookup: {"tool":"memory","action":"search","query":"criador"}
+        - Voice identity: {"tool":"voice_identity","action":"status"}
         - Document search (the user's imported manuals/recipes/guides): {"tool":"search_docs","action":"search","query":"router error 5"}
         - Open/focus a document to work with it: {"tool":"search_docs","action":"focus","query":"router manual"}
         - Close the open document: {"tool":"search_docs","action":"unfocus"}
