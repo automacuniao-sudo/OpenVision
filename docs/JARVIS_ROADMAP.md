@@ -107,10 +107,12 @@ Testes:
 
 ## Fase 3 — Reconhecimento avançado
 
-### ⬜ Reconhecimento facial
-- [ ] Cadastro explícito de pessoas conhecidas.
-- [ ] Gerar/armazenar representação facial com segurança.
-- [ ] Matching local quando viável.
+### 🟡 Reconhecimento facial — implementação Build 38
+- [x] Base de reconhecimento local herdada do OpenVision (Apple Vision feature print).
+- [x] Câmera traseira do iPhone como fallback quando os Ray-Ban não estiverem disponíveis.
+- [x] Tool nativa de reconhecimento para Gemini Live/OpenAI.
+- [ ] Validar cadastro explícito de pessoas conhecidas no aparelho.
+- [ ] Validar matching e calibrar threshold com testes reais.
 - [ ] Threshold para evitar falsos positivos.
 - [ ] Estado **"não reconheço"** quando confiança for insuficiente.
 - [ ] Remover/recriar cadastro.
@@ -147,11 +149,11 @@ Testes:
 
 ## Ordem de execução atual
 
-1. **Estabilizar OpenClaw e comandos diretos no PC.**
-2. **Uniformizar experiência Gemini Live / OpenClaw.**
-3. **Validar Ray-Ban Meta ponta a ponta.**
-4. **Expandir Fase 2 no iPhone.**
-5. **Iniciar reconhecimento facial.**
+1. **Validar reconhecimento facial + câmera do iPhone (Build 38).**
+2. **Retomar estabilização do OpenClaw e comandos diretos no PC.**
+3. **Uniformizar experiência Gemini Live / OpenClaw.**
+4. **Validar Ray-Ban Meta ponta a ponta.**
+5. **Expandir Fase 2 no iPhone.**
 6. **Iniciar reconhecimento de voz.**
 
 ---

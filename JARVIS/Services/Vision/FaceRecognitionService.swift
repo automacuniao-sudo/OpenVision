@@ -41,12 +41,12 @@ final class FaceRecognitionService: ObservableObject {
 
     func rememberFace(name: String, from image: UIImage) async -> String {
         let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanName.isEmpty else { return "What name should I save them under?" }
-        guard let cgImage = image.cgImage else { return "I couldn't get a clear picture — try again." }
+        guard !cleanName.isEmpty else { return "Qual nome devo salvar para essa pessoa?" }
+        guard let cgImage = Self.normalizedCGImage(from: image) else { return "Não consegui obter uma imagem nítida — tente novamente." }
 
         let prints = await Self.facePrintData(in: cgImage)
         guard let printData = prints.first else {
-            return "I don't see a face clearly. Have them look toward you and try again."
+            return "Não vejo um rosto com clareza. Peça para a pessoa olhar para a câmera e tente novamente."
         }
 
         if let idx = knownFaces.firstIndex(where: { $0.name.lowercased() == cleanName.lowercased() }) {
@@ -55,17 +55,17 @@ final class FaceRecognitionService: ObservableObject {
             knownFaces.append(KnownFace(name: cleanName, printData: printData, lastSeen: Date()))
         }
         save()
-        return "Got it — I'll remember \(cleanName)."
+        return "Certo — vou lembrar de \(cleanName)."
     }
 
     func identify(in image: UIImage) async -> String {
         guard !knownFaces.isEmpty else {
-            return "I don't know anyone yet. Say “remember this person as …” to teach me a face."
+            return "Ainda não conheço ninguém. Diga “lembre essa pessoa como...” para me ensinar um rosto."
         }
-        guard let cgImage = image.cgImage else { return "I couldn't get a clear picture — try again." }
+        guard let cgImage = Self.normalizedCGImage(from: image) else { return "Não consegui obter uma imagem nítida — tente novamente." }
 
         let prints = await Self.facePrintData(in: cgImage)
-        guard !prints.isEmpty else { return "I don't see anyone right now." }
+        guard !prints.isEmpty else { return "Não vejo nenhum rosto agora." }
 
         let known = knownFaces.map { (name: $0.name, data: $0.printData) }
         var names: [String] = []
@@ -78,9 +78,9 @@ final class FaceRecognitionService: ObservableObject {
         save()
 
         switch names.count {
-        case 0: return "I see a face, but I don't recognise them."
-        case 1: return "That's \(names[0])."
-        default: return "I recognise \(names.joined(separator: ", "))."
+        case 0: return "Vejo um rosto, mas ainda não reconheço essa pessoa."
+        case 1: return "Essa pessoa é \(names[0])."
+        default: return "Reconheci: \(names.joined(separator: ", "))."
         }
     }
 
@@ -89,13 +89,29 @@ final class FaceRecognitionService: ObservableObject {
         let before = knownFaces.count
         knownFaces.removeAll { $0.name.lowercased() == target }
         save()
-        return knownFaces.count < before ? "Okay, I've forgotten \(name)." : "I don't have anyone named \(name)."
+        return knownFaces.count < before ? "Certo, esqueci \(name)." : "Não tenho ninguém salvo como \(name)."
     }
 
     func listKnownFaces() -> String {
-        guard !knownFaces.isEmpty else { return "I don't know anyone yet." }
+        guard !knownFaces.isEmpty else { return "Ainda não conheço ninguém." }
         let names = knownFaces.map { $0.name }
-        return names.count == 1 ? "I know \(names[0])." : "I know \(names.count) people: \(names.joined(separator: ", "))."
+        return names.count == 1 ? "Conheço \(names[0])." : "Conheço \(names.count) pessoas: \(names.joined(separator: ", "))."
+    }
+
+    /// Phone-camera JPEGs commonly arrive with orientation metadata instead of physically rotated
+    /// pixels. Vision receives the CGImage pixels, so render an upright copy before face detection.
+    /// Glasses frames that are already .up pass through without an extra allocation.
+    private static func normalizedCGImage(from image: UIImage) -> CGImage? {
+        if image.imageOrientation == .up {
+            return image.cgImage
+        }
+        guard image.size.width > 0, image.size.height > 0 else { return nil }
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        let rendered = UIGraphicsImageRenderer(size: image.size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+        return rendered.cgImage
     }
 
     // MARK: - Vision (off the main thread; returns Sendable Data)

@@ -1600,11 +1600,77 @@ final class VoiceAgentViewModel: ObservableObject {
     /// (agentic — no keyword matching, like OpenGlasses' face_recognition tool). Returns true
     /// if the command was a face command and was handled.
     private func handleFaceCommandIfNeeded(_ command: String) async -> Bool {
+        // Fast deterministic path for the explicit commands we actually use in Portuguese/English.
+        // This keeps face recognition available on OpenClaw/OpenAI even when the local MLX model is
+        // not loaded. Ambiguous requests still fall through to the on-device classifier/model.
+        if let intent = deterministicFaceIntent(command) {
+            await handleFaceIntent(intent)
+            return true
+        }
+
         guard let intent = await GemmaLocalService.shared.classifyFaceIntent(command) else {
             return false   // model not loaded, or not a face command
         }
         await handleFaceIntent(intent)
         return true
+    }
+
+    private func deterministicFaceIntent(_ command: String) -> GemmaLocalService.FaceIntent? {
+        let normalized = command
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
+            .lowercased()
+            .replacingOccurrences(of: "[^a-z0-9 ]", with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        func suffix(after markers: [String]) -> String? {
+            for marker in markers {
+                if let range = command.range(
+                    of: marker,
+                    options: [.caseInsensitive, .diacriticInsensitive]
+                ) {
+                    let value = command[range.upperBound...]
+                        .trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+                    if !value.isEmpty { return value }
+                }
+            }
+            return nil
+        }
+
+        let listPhrases = [
+            "quem voce conhece", "quais pessoas voce conhece", "liste as pessoas que voce conhece",
+            "list known faces", "who do you know"
+        ]
+        if listPhrases.contains(where: normalized.contains) {
+            return .init(action: "list", name: "")
+        }
+
+        if normalized.hasPrefix("esqueca ") || normalized.hasPrefix("forget ") {
+            let name = suffix(after: ["esqueça ", "esqueca ", "forget "]) ?? ""
+            return .init(action: "forget", name: name)
+        }
+
+        let visualCues = [
+            "essa pessoa", "esse rosto", "essa face", "pessoa na minha frente",
+            "this person", "this face", "person in front"
+        ]
+        let hasVisualCue = visualCues.contains(where: normalized.contains)
+        let rememberCues = ["lembre", "memorize", "cadastre", "remember", "save this"]
+        if hasVisualCue && rememberCues.contains(where: normalized.contains) {
+            let name = suffix(after: [" como ", " as "]) ?? ""
+            return .init(action: "remember", name: name)
+        }
+
+        let identifyCues = [
+            "quem e essa pessoa", "quem e esse rosto", "voce conhece essa pessoa",
+            "reconheca essa pessoa", "identifique essa pessoa",
+            "who is this person", "who is this face", "recognize this person", "identify this person"
+        ]
+        if identifyCues.contains(where: normalized.contains) {
+            return .init(action: "identify", name: "")
+        }
+
+        return nil
     }
 
     /// Shared handling for the on-device text models (Gemma / Apple Foundation): one agentic
@@ -1681,28 +1747,49 @@ final class VoiceAgentViewModel: ObservableObject {
         switch intent.action {
         case "identify":
             agentState = .thinking
-            guard let image = await currentGlassesImage() else {
-                speakResponse("I couldn't get a picture from the glasses. Make sure they're connected.")
+            guard let image = await currentFaceImage() else {
+                speakResponse("Não consegui acessar uma câmera para reconhecer a pessoa.")
                 return
             }
             speakResponse(await face.identify(in: image))
+
         case "remember":
             agentState = .thinking
             guard !intent.name.isEmpty else {
-                speakResponse("Sure — what's their name?")
+                speakResponse("Claro. Qual é o nome dessa pessoa?")
                 return
             }
-            guard let image = await currentGlassesImage() else {
-                speakResponse("I couldn't get a picture from the glasses. Make sure they're connected.")
+            guard let image = await currentFaceImage() else {
+                speakResponse("Não consegui acessar uma câmera para cadastrar essa pessoa.")
                 return
             }
             speakResponse(await face.rememberFace(name: intent.name, from: image))
+
         case "forget":
             speakResponse(face.forgetFace(name: intent.name))
+
         case "list":
             speakResponse(face.listKnownFaces())
+
         default:
             break
+        }
+    }
+
+    /// Face recognition is camera-source agnostic. Prefer the Ray-Ban POV camera when it is
+    /// actually connected; otherwise take a one-shot photo with the iPhone rear camera.
+    private func currentFaceImage() async -> UIImage? {
+        do {
+            let capture = try await VisionCaptureService.shared.captureImage(
+                preferred: .automatic,
+                keepGlassesStreaming: isLiveVideoMode
+            )
+            DiagnosticLogger.shared.log("Face", "Captured face frame source=\(capture.source.rawValue)")
+            return capture.image
+        } catch {
+            DiagnosticLogger.shared.log("Face", "Camera capture failed: \(error.localizedDescription)")
+            errorMessage = "Face camera failed: \(error.localizedDescription)"
+            return nil
         }
     }
 
@@ -1761,6 +1848,20 @@ final class VoiceAgentViewModel: ObservableObject {
         // the stream is running, waits for a fresh frame, and restarts a stalled stream.
         imageData = await freshLiveFrame()
 
+        // No Ray-Ban frame (not connected, permission/session failure, etc.) → use the phone camera.
+        // This also makes photo/vision testing possible before the glasses camera path is ready.
+        if imageData == nil {
+            do {
+                let phoneImage = try await PhoneCameraService.shared.capturePhoto()
+                imageData = phoneImage.jpegData(compressionQuality: 0.85)
+                if imageData != nil {
+                    DiagnosticLogger.shared.log("Vision", "Photo fallback captured with iPhone rear camera")
+                }
+            } catch {
+                DiagnosticLogger.shared.log("Vision", "iPhone camera fallback failed: \(error.localizedDescription)")
+            }
+        }
+
         NSLog("[OV] captureAndSendPhoto result: %@ (streaming=%@, registered=%@)",
               imageData == nil ? "NO IMAGE" : "\(imageData!.count) bytes",
               glassesManager.isStreaming ? "yes" : "no",
@@ -1786,8 +1887,8 @@ final class VoiceAgentViewModel: ObservableObject {
                 NSLog("[OV] No image available — capture returned nil; NOT sending to model")
                 // Don't send a degraded text-only prompt to the model — that's what makes it
                 // reply "please provide an image". Tell the user directly and stop.
-                errorMessage = "Couldn't capture a photo (streaming: \(glassesManager.isStreaming ? "on" : "off"), registered: \(glassesManager.isRegistered ? "yes" : "no")). Try again."
-                speakResponse("I couldn't get a photo from the glasses. Please try again.")
+                errorMessage = "Couldn't capture a photo from the glasses or iPhone camera. Try again."
+                speakResponse("Não consegui capturar uma imagem nem dos óculos nem da câmera do iPhone. Tente novamente.")
             }
         } catch {
             print("[VoiceAgent] Failed to send: \(error)")
@@ -2019,7 +2120,17 @@ final class VoiceAgentViewModel: ObservableObject {
                 completion("Failed to send image: \(error.localizedDescription)")
             }
         } else {
-            completion("Camera is not available. Please connect glasses and start streaming first.")
+            do {
+                let image = try await PhoneCameraService.shared.capturePhoto()
+                guard let jpegData = image.jpegData(compressionQuality: 0.85) else {
+                    completion("The iPhone camera captured an image but JPEG conversion failed.")
+                    return
+                }
+                try await OpenClawService.shared.sendMessage("Here's the photo I just captured with the iPhone camera.", imageData: jpegData)
+                completion("Photo captured with the iPhone camera and sent for analysis.")
+            } catch {
+                completion("iPhone camera capture failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -2055,7 +2166,17 @@ final class VoiceAgentViewModel: ObservableObject {
                 completion("Failed to capture photo.")
             }
         } else {
-            completion("Camera is not available. Please connect glasses and start streaming first, or say 'start video stream' for live mode.")
+            do {
+                let image = try await PhoneCameraService.shared.capturePhoto()
+                guard let jpegData = image.jpegData(compressionQuality: 0.85) else {
+                    completion("The iPhone camera captured an image but JPEG conversion failed.")
+                    return
+                }
+                try await OpenClawService.shared.sendMessage(prompt, imageData: jpegData)
+                completion("Scene captured with the iPhone camera and sent for analysis.")
+            } catch {
+                completion("iPhone camera capture failed: \(error.localizedDescription)")
+            }
         }
     }
 }
