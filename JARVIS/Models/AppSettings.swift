@@ -92,6 +92,13 @@ struct AppSettings: Codable, Equatable {
     var kokoroVoice: String = "af_heart"
     var preferGlassesMic: Bool = true
 
+    /// Beta speaker-verification lock. When enabled, JARVIS verifies each STT command locally
+    /// before forwarding it to any backend. Gemini Live switches from raw PCM input to verified
+    /// text turns so another speaker cannot inject commands into the active session.
+    var voiceOwnerLockEnabled: Bool = false
+    /// CAM++ cosine-similarity threshold. Tunable because microphone/room conditions vary.
+    var voiceOwnerSimilarityThreshold: Double = 0.65
+
     var userPrompt: String = ""
     var memories: [String: String] = [:]
     var jarvisProfileSeedVersion: Int = 0
