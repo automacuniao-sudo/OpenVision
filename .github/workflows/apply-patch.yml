@@ -68,6 +68,7 @@ jobs:
         shell: bash
         env:
           PR_BODY: compilacao dos testes portateis + compilacao completa para dispositivo
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -75,6 +76,8 @@ jobs:
           git switch --create "$patch_branch"
           git add --all
           git diff --cached --quiet && { echo "Patch script produced no changes" >&2; exit 1; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "$COMMIT_MESSAGE"
           git push --set-upstream origin "$patch_branch"
           gh pr create --base jarvis-dev --head "$patch_branch" --title "$PR_TITLE" --body "$PR_BODY"
