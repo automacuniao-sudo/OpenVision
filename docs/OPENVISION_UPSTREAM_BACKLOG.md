@@ -140,6 +140,20 @@ Estrategia: uma funcionalidade por branch, CI verde, IPA e validacao no iPhone a
 
 ## Projeto externo inspirado em JARVIS - analise do "PROMPT JARVIS"
 
+
+### Ideias aprovadas para aproveitar no JARVIS
+
+Estas sao as ideias do documento externo que consideramos realmente uteis para o nosso projeto nativo:
+
+- [ ] **Second Brain estruturado** - Evoluir a memoria de frases soltas para notas estruturadas, categorias, metadados e relacoes.
+- [ ] **Relacoes entre memorias** - Conectar pessoas, projetos, metas, preferencias e outros fatos em vez de manter apenas uma lista plana.
+- [ ] **Unificar rosto + voz + memoria** - Criar um `PersonProfileStore` com `personId` persistente ligando face embeddings, speaker embedding, aliases e fatos.
+- [ ] **Memoria viva automatica, mas por tool call** - Salvar fatos duradouros de forma automatica usando `MemoryTool` com sucesso verificavel; nao usar `[[SAVE:...]]`/regex como mecanismo de persistencia.
+- [ ] **Second Brain visual** - Criar uma tela nativa opcional com grafo de pessoas, projetos, metas e memorias conectadas.
+- [ ] **Perfil e personificacao do JARVIS** - Organizar nome, forma de tratamento, personalidade, wake word, voz e tema em um perfil consistente.
+- [ ] **Entrada de texto como alternativa a voz** - Adicionar um campo de texto para testes, acessibilidade e uso quando o microfone nao for conveniente.
+- [ ] **Claude/Anthropic como backend opcional** - Avaliar futuramente como backend adicional de texto/tool calling, sem substituir o Gemini Live no fluxo de audio realtime.
+
 Fonte analisada em 2026-09-01: PDF `PROMPT JARVIS.pdf`.
 
 O material e uma especificacao/prompt para gerar um Jarvis web em arquivo unico, nao um repositorio de codigo pronto. Portanto, o que vale aproveitar sao principalmente conceitos de produto, memoria e UX; a implementacao HTML/Web Speech/localStorage nao deve ser portada literalmente para o app iOS.
