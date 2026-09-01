@@ -1,73 +1,135 @@
 # AI Development Workflow — OpenVision
 
-Este documento descreve como operar dois agentes de IA no desenvolvimento diário do OpenVision.
+Este documento descreve o fluxo de desenvolvimento com agentes no OpenVision/JARVIS.
 
-## Objetivo
+## Modo recomendado: ORCHESTRATOR
 
-Você conversa principalmente com o LEAD.
+O usuário conversa com um único chat principal:
 
-O fluxo ideal é:
+`OpenVision — ORCHESTRATOR`
+
+Esse agente lê `.agents/ORCHESTRATOR.md` e atua como LEAD/controlador.
+
+Fluxo desejado:
 
 ```text
 USUÁRIO
    ↓
-LEAD — investiga e cria Task Brief
-   ↓
-DEVELOPER — implementa e testa
-   ↓
-LEAD — revisa
-   ├── CHANGES_REQUIRED → DEVELOPER corrige → LEAD revisa
+ORCHESTRATOR / LEAD
+   ↓ investiga + Task Brief
+DEVELOPER subagente
+   ↓ implementa + testa + self-review
+ORCHESTRATOR / LEAD
+   ↓ revisão
+   ├── CHANGES_REQUIRED → DEV corrige → revisão
    └── APPROVED
            ↓
         Pull Request
            ↓
-       CodeRabbit
+       CodeRabbit / CI
            ↓
      aprovação humana
            ↓
           main
 ```
 
-## Sessões recomendadas no Codex
+O ORCHESTRATOR deve verificar o que a sessão realmente expõe. Se não houver ferramenta real de delegação/subagente, ele usa o modo manual abaixo em vez de simular comunicação.
 
-Crie duas threads/sessões separadas para o mesmo repositório.
+## Prompt inicial do ORCHESTRATOR
 
-### Sessão 1
-Nome sugerido:
-
-`OpenVision — LEAD`
-
-Prompt inicial:
+Crie um novo chat no projeto e use:
 
 ```text
-Você é o agente LEAD deste repositório.
-Leia AGENTS.md e .agents/LEAD.md e siga essas regras durante toda a sessão.
-Sua função é investigar, planejar e revisar. Não implemente a tarefa principal.
-Quando eu descrever um pedido, produza um Task Brief completo para o DEVELOPER.
-Depois revise o diff produzido pelo DEVELOPER.
+Você é o ORCHESTRATOR deste repositório.
+
+Leia obrigatoriamente:
+AGENTS.md
+.agents/ORCHESTRATOR.md
+.agents/LEAD.md
+.agents/DEVELOPER.md
+README.md
+docs/AI_WORKFLOW.md
+
+Siga essas regras durante toda a sessão.
+
+Quero falar apenas com você. Para cada tarefa:
+1. descubra se esta sessão possui delegação/subagentes reais;
+2. se possuir, opere em AUTOMATED MODE;
+3. investigue como LEAD e encontre a causa raiz;
+4. produza o Task Brief;
+5. delegue a implementação a um DEVELOPER isolado;
+6. receba o Implementation Report;
+7. revise o diff;
+8. se houver CHANGES_REQUIRED, mande o DEV corrigir e revise novamente;
+9. quando estiver APPROVED, abra um PR;
+10. nunca faça merge na main sem minha aprovação explícita.
+
+Se a sessão não suportar delegação real, use MANUAL FALLBACK MODE e nunca finja que acionou outra thread.
+
+Confirme os arquivos lidos e informe se a sessão está em AUTOMATED MODE ou MANUAL FALLBACK MODE.
 ```
 
-### Sessão 2
-Nome sugerido:
+## Modo automático
 
-`OpenVision — DEV`
+Quando delegação/subagentes estiver disponível, o usuário só envia a solicitação.
 
-Prompt inicial:
+Exemplo:
 
 ```text
-Você é o agente DEVELOPER deste repositório.
-Leia AGENTS.md e .agents/DEVELOPER.md e siga essas regras durante toda a sessão.
-Implemente somente Task Briefs produzidos pelo LEAD.
-Trabalhe sempre fora da main, execute testes apropriados e entregue um Implementation Report.
+Quando eu digo "Ok Jarvis", às vezes entra em Listening e transcreve,
+mas não responde. Investigue e corrija a causa raiz sem quebrar Gemini Live
+nem OpenClaw. Faça o ciclo completo até o PR, mas não faça merge.
 ```
 
-## Isolamento
+O ORCHESTRATOR deve continuar sozinho por:
+- investigação;
+- criação de branch/worktree;
+- Task Brief;
+- dispatch do DEV;
+- implementação;
+- testes;
+- revisão;
+- correções;
+- re-review;
+- abertura do PR.
 
-Não coloque os dois editando o mesmo checkout ao mesmo tempo.
+Ele só para nos limites definidos em `.agents/ORCHESTRATOR.md`.
 
-Preferência:
-- LEAD usa o checkout principal para leitura/revisão;
-- DEV usa uma Git worktree ou branch isolada por tarefa.
+## Modo manual de fallback
+
+Os chats já existentes continuam úteis:
+
+### `OpenVision — LEAD`
+Lê:
+- `AGENTS.md`
+- `.agents/LEAD.md`
+
+Produz Task Brief e revisa o DEV.
+
+### `OpenVision — DEV`
+Lê:
+- `AGENTS.md`
+- `.agents/DEVELOPER.md`
+
+Implementa Task Briefs e produz Implementation Report.
+
+Fluxo:
+
+```text
+USUÁRIO → LEAD → copiar Task Brief → DEV → copiar Report → LEAD
+```
+
+Use esse modo somente quando o ORCHESTRATOR confirmar que a sessão atual não tem delegação real ou quando você quiser depurar os papéis separadamente.
+
+## Isolamento Git
+
+Nenhuma implementação em `main`.
+
+Toda tarefa não trivial deve partir do HEAD atual de `main`.
+
+Padrão:
+
+`ai/YYYY-MM-DD-<slug>`
 
 Exemplo:
 
@@ -75,146 +137,90 @@ Exemplo:
 git fetch origin
 git switch main
 git pull --ff-only
-
 git worktree add ../OpenVision-task -b ai/2026-09-01-wake-word main
 ```
 
-O DEV trabalha em `../OpenVision-task`.
+O DEV trabalha no worktree isolado quando possível.
 
-Depois:
+## Regras de paralelismo
 
-```bash
-git -C ../OpenVision-task status
-git -C ../OpenVision-task diff
-```
+Paralelize apenas problemas realmente independentes.
 
-## Como iniciar uma tarefa
+Bom:
+- um agente investiga UI;
+- outro investiga um parser separado;
+- arquivos e estado não se sobrepõem.
 
-Você pode falar normalmente com o LEAD, por exemplo:
+Ruim:
+- dois agentes alterando `VoiceCommandService.swift`;
+- dois agentes mexendo no mesmo AVAudioSession;
+- dois agentes mudando a mesma máquina de estados.
 
-```text
-Quando eu digo "Ok Jarvis", às vezes aparece Listening, transcreve o que eu falo,
-mas não responde. Investigue o projeto e crie um plano para corrigir sem quebrar
-Gemini Live nem OpenClaw.
-```
+Para uma única feature/bug, prefira sequência:
+ORCHESTRATOR/LEAD → DEV → ORCHESTRATOR/LEAD.
 
-O LEAD deve investigar e devolver o Task Brief.
+## Revisão e fix loop
 
-Copie o Task Brief para o DEV.
+O DEV não aprova o próprio trabalho.
 
-O DEV implementa e devolve o Implementation Report.
+O ORCHESTRATOR/LEAD responde:
+- `APPROVED`; ou
+- `CHANGES_REQUIRED`.
 
-Passe o relatório/diff ao LEAD.
+Se houver findings Critical/Important:
+1. retornar ao DEV;
+2. corrigir;
+3. rodar testes afetados;
+4. revisar novamente.
 
-## Branches
-
-Uma branch por tarefa.
-
-Exemplos:
-- `ai/2026-09-01-wake-word-reliability`
-- `ai/2026-09-01-gemini-audio-streaming`
-- `ai/2026-09-01-openclaw-reconnect`
-
-Evite:
-- `fix`
-- `test2`
-- `new`
-- trabalho direto em `main`
-
-## Ciclo de revisão
-
-Se o LEAD retornar `CHANGES_REQUIRED`, envie todos os findings ao mesmo DEV.
-
-Não comece outra refatoração.
-
-O DEV:
-1. corrige;
-2. roda testes afetados;
-3. atualiza o Implementation Report.
-
-O LEAD faz uma revisão focada nas correções e procura regressões novas introduzidas pelo patch.
+Não transformar o fix loop em refatoração de escopo aberto.
 
 ## Pull Request
 
-Somente depois de `APPROVED`.
+Após `APPROVED`, o ORCHESTRATOR pode abrir o PR.
 
-Título sugerido:
+Título exemplo:
 
 `fix(voice): stabilize wake-word response flow`
 
-Corpo:
+O corpo deve registrar:
+- problema;
+- causa raiz;
+- solução;
+- testes;
+- teste em dispositivo;
+- riscos.
 
-```markdown
-## Problema
-...
+O CodeRabbit é uma camada adicional, não substitui o LEAD.
 
-## Causa raiz
-...
+## Merge
 
-## Solução
-...
-
-## Testes
-...
-
-## Teste em dispositivo
-...
-
-## Riscos
-...
-```
-
-O CodeRabbit já está configurado em `.coderabbit.yaml` e deve revisar automaticamente PRs não-draft, conforme configuração atual.
-
-## Critérios para merge
+O ORCHESTRATOR, LEAD e DEVELOPER não podem fazer merge em `main` sem aprovação humana explícita.
 
 Antes de merge:
-- LEAD: APPROVED;
-- CI/build aplicável: verde;
-- findings Critical/Important: resolvidos;
-- CodeRabbit: findings relevantes tratados;
-- teste em iPhone físico realizado quando a mudança tocar Bluetooth, áudio real, Meta DAT ou modelos locais;
-- usuário aprovou o merge.
+- LEAD/ORCHESTRATOR: `APPROVED`;
+- CI relevante: verde ou limitação explicada;
+- findings importantes: resolvidos;
+- CodeRabbit relevante: tratado;
+- iPhone físico testado quando a mudança tocar Bluetooth, áudio real, Meta DAT ou MLX;
+- usuário autorizou o merge.
 
-## Quando paralelizar
+## Resultado esperado
 
-Só use agentes paralelos quando as tarefas forem realmente independentes.
+No modo automático, a experiência para o usuário deve ser próxima de:
 
-Bom exemplo:
-- agente A investiga falha de UI;
-- agente B investiga teste isolado de parser.
+```text
+Usuário: "Corrija o bug X e faça tudo até o PR."
 
-Mau exemplo:
-- dois agentes modificando `VoiceCommandService.swift` ao mesmo tempo;
-- um alterando AVAudioSession enquanto outro altera o mesmo fluxo de TTS.
+Orquestrador:
+- investiga
+- delega
+- revisa
+- manda corrigir
+- valida
+- abre PR
 
-Para implementação do mesmo feature, prefira sequência:
-LEAD → DEV → LEAD.
+Orquestrador: "APPROVED. PR #N aberto. Falta apenas seu teste/aprovação para merge."
+```
 
-## Registro de decisões
-
-Para tarefas maiores, crie um arquivo temporário/issue com:
-- objetivo;
-- Task Brief;
-- decisões do LEAD;
-- Implementation Report;
-- findings;
-- resultado dos testes.
-
-A conversa não deve ser a única fonte de verdade.
-
-## Primeiro uso recomendado
-
-Comece com um bug real e relativamente delimitado.
-
-Fluxo:
-1. descreva o bug ao LEAD;
-2. valide o Task Brief;
-3. envie ao DEV;
-4. teste;
-5. revise;
-6. abra PR;
-7. teste no iPhone;
-8. faça merge.
-
-Depois de 2–3 tarefas bem-sucedidas, automatize mais etapas, mas mantenha merge e ações destrutivas sob aprovação humana.
+Sem cópia manual de Task Brief entre chats quando a plataforma disponibilizar delegação real.
