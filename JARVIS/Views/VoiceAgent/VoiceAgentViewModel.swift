@@ -322,9 +322,21 @@ final class VoiceAgentViewModel: ObservableObject {
                 aiTranscript = ""
 
                 if settingsManager.settings.aiBackend == .geminiLive {
-                    // Native full-duplex audio owns the conversation after the one-time wake word.
-                    voiceCommandService.persistentConversationMode = false
-                    try startDirectGeminiVoiceMode()
+                    if settingsManager.settings.voiceOwnerLockEnabled {
+                        // Security mode verifies each utterance locally before it reaches Gemini.
+                        // Raw realtime PCM cannot be speaker-gated without buffering, so Owner Lock
+                        // deliberately uses Apple STT -> verified text turns.
+                        voiceCommandService.persistentConversationMode = true
+                        if !voiceCommandService.isListening {
+                            try? voiceCommandService.startListening()
+                        }
+                        voiceCommandService.enterConversationMode()
+                        DiagnosticLogger.shared.log("VoiceAuth", "Gemini secure input mode active (verified STT turns)")
+                    } else {
+                        // Lowest-latency normal mode keeps native full-duplex Gemini audio.
+                        voiceCommandService.persistentConversationMode = false
+                        try startDirectGeminiVoiceMode()
+                    }
                 } else {
                     // Text backends still use Apple STT, but the conversation itself is persistent:
                     // silence no longer tears the session down and forces another wake phrase.
@@ -371,6 +383,7 @@ final class VoiceAgentViewModel: ObservableObject {
         }
 
         audioCapture.onAudioCaptured = { [weak self] data in
+            SpeakerVerificationService.shared.feedPCM16(data)
             self?.geminiLive.sendAudio(data: data)
         }
 

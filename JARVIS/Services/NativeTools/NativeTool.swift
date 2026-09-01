@@ -85,6 +85,8 @@ final class NativeToolRegistry {
             DocumentSearchTool(),
             DeviceStatusTool(),
             FaceRecognitionTool(),
+            VoiceIdentityTool(),
+            MemoryTool(),
             CurrentDateTimeTool(),
             WebSearchTool(),
             LastSearchSourcesTool(),

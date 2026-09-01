@@ -118,19 +118,24 @@ Testes:
 - [ ] Remover/recriar cadastro.
 - [ ] Definir política de privacidade para dados biométricos.
 
-### ⬜ Reconhecimento de voz / locutor
-- [ ] Estudar speaker verification local vs API.
-- [ ] Cadastro de voz.
-- [ ] Diferenciar **identificação** de **autenticação**.
+### 🟡 Reconhecimento de voz / locutor — implementação Build 39
+- [x] Selecionado CAM++/FluidAudio para speaker embedding local no iPhone.
+- [x] Cadastro de voz por comando via tool `voice_identity`.
+- [x] Verificação automática de speaker antes de comandos quando Owner Voice Lock estiver ativo.
+- [x] Gemini Live usa modo STT verificado quando Owner Voice Lock estiver ativo.
+- [x] Perfil vocal persistente salvo localmente; embedding nunca é enviado ao backend.
+- [x] Controle/tuning de threshold em Settings.
+- [ ] Testar voz do proprietário x outras pessoas e calibrar threshold.
+- [ ] Testar reprodução gravada da voz (replay attack) e documentar risco.
 - [ ] Medir falso aceite e falsa rejeição.
-- [ ] Definir política de segurança para ações sensíveis.
 - [ ] Não usar somente voz como autorização para ações de alto risco sem fator adicional.
 
 ---
 
 ## Backlog futuro
 
-- [ ] Memória persistente maior e estruturada.
+- [x] Memória persistente por voz (Build 39): tool `memory` salva/lista/busca/remove fatos gerais.
+- [ ] Memória de pessoas estruturada e vinculada ao ID facial.
 - [ ] Contexto de pessoas conhecidas.
 - [ ] Mais automações do computador.
 - [ ] Integrações adicionais via ferramentas/MCP quando fizer sentido.

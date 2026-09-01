@@ -11,7 +11,11 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26
+    # macos-26 Arm64 provisioning timed out repeatedly on this PR. Use the separate
+    # Intel pool while keeping Xcode 26.6 / Swift 6.3 required by current mlx-swift.
+    runs-on: macos-26-intel
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
     steps:
       - name: Baixar codigo
