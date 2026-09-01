@@ -104,7 +104,7 @@ final class SpeakerVerificationService: @unchecked Sendable {
         let displayName = cleanName.isEmpty ? (ownerProfileName ?? "Proprietário") : cleanName
         let raw = snapshotRecentAudio(maxSeconds: 6.0)
 
-        guard let speech = Self.prepareSpeech(raw) else {
+        guard let speech = Self.prepareSpeech(raw, minimumSeconds: 1.5) else {
             return "Não consegui uma amostra de voz longa e clara o suficiente. Fale por pelo menos dois segundos e tente novamente."
         }
 
@@ -162,7 +162,9 @@ final class SpeakerVerificationService: @unchecked Sendable {
         guard let saved else {
             return VerificationResult(isMatch: false, similarity: nil, reason: "no_owner_profile")
         }
-        guard let speech = Self.prepareSpeech(raw) else {
+        // Commands can be short ("sim", "abra X"), so verification accepts a shorter sample
+        // than enrollment. Very short utterances may still be rejected rather than weakening auth.
+        guard let speech = Self.prepareSpeech(raw, minimumSeconds: 0.55) else {
             return VerificationResult(isMatch: false, similarity: nil, reason: "insufficient_speech")
         }
 
@@ -200,9 +202,10 @@ final class SpeakerVerificationService: @unchecked Sendable {
         lock.unlock()
     }
 
-    private static func prepareSpeech(_ samples: [Float]) -> [Float]? {
+    private static func prepareSpeech(_ samples: [Float], minimumSeconds: Double) -> [Float]? {
         let frame = 320
-        guard samples.count >= 16_000 else { return nil }
+        let minimumSamples = max(frame * 2, Int(16_000.0 * minimumSeconds))
+        guard samples.count >= minimumSamples else { return nil }
 
         var firstActive: Int?
         var lastActive: Int?
@@ -221,7 +224,7 @@ final class SpeakerVerificationService: @unchecked Sendable {
         let pad = 1_600
         let start = max(0, first - pad)
         let end = min(samples.count, last + pad)
-        guard end - start >= 19_200 else { return nil }
+        guard end - start >= minimumSamples else { return nil }
 
         let clipped = Array(samples[start..<end].suffix(16_000 * 6))
         let rms = sqrt(clipped.reduce(Float(0)) { $0 + $1 * $1 } / Float(clipped.count))
