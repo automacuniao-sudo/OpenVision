@@ -5,6 +5,9 @@ on:
   push:
     branches:
       - jarvis-dev
+  pull_request:
+    branches:
+      - jarvis-dev
 
 jobs:
   build:
@@ -40,6 +43,17 @@ jobs:
         run: |
           xcodegen generate
 
+      - name: Rodar testes (JARVISTests)
+        run: |
+          xcodebuild \
+            -project JARVIS.xcodeproj \
+            -scheme JARVIS \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16,OS=latest' \
+            -skipMacroValidation \
+            -skipPackagePluginValidation \
+            test
+
       - name: Compilar sem assinatura
         run: |
           xcodebuild \
@@ -56,6 +70,7 @@ jobs:
             build
 
       - name: Criar IPA
+        if: github.event_name != 'pull_request'
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app build/ipa/Payload/
@@ -64,6 +79,7 @@ jobs:
           zip -r JARVIS-unsigned.ipa Payload
 
       - name: Salvar IPA
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: JARVIS-iOS-unsigned

@@ -1,0 +1,78 @@
+name: Apply Patch
+
+# Workflow único e reutilizável para aplicar qualquer script em .github/patches/.
+# Substitui os workflows avulsos apply-buildXX-*.yml, repair-build35-ci.yml,
+# build35-selfcheck.yml e capture-build35-official-status.yml.
+#
+# Diferença chave em relação ao modelo anterior: em vez de commitar e dar
+# `git push` direto na branch jarvis-dev, este workflow cria uma branch nova,
+# commita ali e abre um Pull Request. O build-ios.yml roda automaticamente
+# nesse PR (testes + compilação) antes de qualquer merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      patch_script:
+        description: 'Nome do script em .github/patches/ (ex: build37-fix.py)'
+        required: true
+        type: string
+      commit_message:
+        description: 'Mensagem de commit para o patch'
+        required: true
+        type: string
+      pr_title:
+        description: 'Titulo do Pull Request'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: jarvis-dev
+          fetch-depth: 0
+
+      - name: Validar script de patch
+        run: |
+          SCRIPT=".github/patches/${{ inputs.patch_script }}"
+          if [ ! -f "$SCRIPT" ]; then
+            echo "::error::Script nao encontrado: $SCRIPT"
+            exit 1
+          fi
+
+      - name: Criar branch de patch
+        run: |
+          BRANCH="patch/${{ github.run_id }}"
+          echo "PATCH_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+          git checkout -b "$BRANCH"
+
+      - name: Aplicar patch
+        run: python3 ".github/patches/${{ inputs.patch_script }}"
+
+      - name: Commitar e enviar branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if git diff --cached --quiet; then
+            echo "::error::O script de patch nao produziu nenhuma alteracao."
+            exit 1
+          fi
+          git commit -m "${{ inputs.commit_message }}"
+          git push origin "$PATCH_BRANCH"
+
+      - name: Abrir Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base jarvis-dev \
+            --head "$PATCH_BRANCH" \
+            --title "${{ inputs.pr_title }}" \
+            --body "Patch automatico gerado por \`${{ inputs.patch_script }}\` via workflow apply-patch. O workflow Build JARVIS iOS vai rodar testes + build nesse PR antes de poder ser mergeado."
