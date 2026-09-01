@@ -2,7 +2,9 @@
 // Pure text math behind the document store (RAG): chunking, cosine similarity, keyword bonus.
 
 import XCTest
+#if !JARVIS_PURE_TESTS
 @testable import JARVIS
+#endif
 
 final class DocumentChunkingTests: XCTestCase {
     func testShortTextIsOneChunk() {

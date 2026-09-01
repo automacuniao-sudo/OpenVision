@@ -35,6 +35,19 @@ configFiles:
   Release: Config.xcconfig
 
 targets:
+  JARVISPureTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: JARVIS/Utilities/TextChunking.swift
+      - path: JARVIS/Services/Documents/DocumentChunking.swift
+      - path: JARVISTests/DocumentChunkingTests.swift
+      - path: JARVISTests/TextChunkingTests.swift
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: JARVIS_PURE_TESTS
+
   JARVISTests:
     type: bundle.unit-test
     platform: iOS
@@ -124,6 +137,16 @@ packages:
     path: Vendor/kokoro-ios
 
 schemes:
+  JARVISPureTests:
+    build:
+      targets:
+        JARVISPureTests: all
+    test:
+      config: Debug
+      gatherCoverageData: true
+      targets:
+        - JARVISPureTests
+
   JARVIS:
     build:
       targets:

@@ -15,7 +15,7 @@ jobs:
 
     steps:
       - name: Baixar codigo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Mostrar ambiente
         run: |
@@ -43,13 +43,36 @@ jobs:
         run: |
           xcodegen generate
 
-      - name: Compilar testes (JARVISTests)
-        # Nao executamos os testes de fato (varias dependencias, como
-        # MLX/Metal e o SDK da camera dos oculos, nao compilam para o
-        # Simulador do iOS). Usamos o mesmo destino de dispositivo real
-        # que ja compila de forma estavel no passo seguinte, so que em
-        # modo build-for-testing: ainda pega erros de compilacao como o
-        # que quebrou o Build 35, sem precisar rodar nada.
+      - name: Executar testes portateis no simulador
+        run: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available -j | python3 -c '
+          import json
+          import sys
+
+          devices = json.load(sys.stdin)["devices"]
+          candidates = [
+              (runtime, device["name"], device["udid"])
+              for runtime, runtime_devices in devices.items()
+              if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS")
+              for device in runtime_devices
+              if device.get("isAvailable")
+          ]
+          if not candidates:
+              raise SystemExit("No available iOS Simulator found")
+          print(sorted(candidates)[0][2])
+          ' )"
+          xcodebuild \
+            -project JARVIS.xcodeproj \
+            -scheme JARVISPureTests \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            test
+
+      - name: Compilar bundle de testes completo para dispositivo (sem executar)
+        # O bundle completo ainda depende de MLX/Metal e do SDK da camera dos oculos.
+        # Este build-for-testing preserva sua cobertura de compilacao sem tentar executa-lo
+        # no simulador, que nao suporta essas dependencias de hardware.
         run: |
           xcodebuild \
             -project JARVIS.xcodeproj \
@@ -89,7 +112,7 @@ jobs:
 
       - name: Salvar IPA
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: JARVIS-iOS-unsigned
           path: build/ipa/JARVIS-unsigned.ipa
