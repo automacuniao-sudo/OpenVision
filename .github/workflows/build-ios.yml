@@ -44,18 +44,23 @@ jobs:
           xcodegen generate
 
       - name: Compilar testes (JARVISTests)
-        # Nao executamos os testes de fato: varias dependencias (MLX/Metal,
-        # SDK da camera dos oculos) nao funcionam no Simulador do iOS.
-        # build-for-testing ainda pega erros de compilacao como o que
-        # quebrou o Build 35, sem depender do simulador rodar essas libs.
+        # Nao executamos os testes de fato (varias dependencias, como
+        # MLX/Metal e o SDK da camera dos oculos, nao compilam para o
+        # Simulador do iOS). Usamos o mesmo destino de dispositivo real
+        # que ja compila de forma estavel no passo seguinte, so que em
+        # modo build-for-testing: ainda pega erros de compilacao como o
+        # que quebrou o Build 35, sem precisar rodar nada.
         run: |
           xcodebuild \
             -project JARVIS.xcodeproj \
             -scheme JARVIS \
             -configuration Debug \
-            -destination 'generic/platform=iOS Simulator' \
+            -destination 'generic/platform=iOS' \
             -skipMacroValidation \
             -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            DEVELOPMENT_TEAM="" \
             build-for-testing
 
       - name: Compilar sem assinatura
