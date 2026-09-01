@@ -509,9 +509,20 @@ final class GeminiLiveService: ObservableObject {
                     await self.handleMessage(message)
                 } catch {
                     if !Task.isCancelled {
-                        print("[GeminiLive] Receive error: \(error)")
-                        DiagnosticLogger.shared.log("Gemini", "Receive error: \(error.localizedDescription)")
-                        await self.handleDisconnect(reason: "receive error: \(error.localizedDescription)")
+                        let closeCode = webSocket.closeCode.rawValue
+                        let closeReason: String
+                        if let reasonData = webSocket.closeReason,
+                           let decoded = String(data: reasonData, encoding: .utf8),
+                           !decoded.isEmpty {
+                            closeReason = decoded
+                        } else {
+                            closeReason = "none"
+                        }
+
+                        let detail = "Receive error: \(error.localizedDescription) closeCode=\(closeCode) closeReason=\(closeReason) setupComplete=\(self.isSetupComplete)"
+                        print("[GeminiLive] \(detail)")
+                        DiagnosticLogger.shared.log("Gemini", detail)
+                        await self.handleDisconnect(reason: detail)
                     }
                     break
                 }

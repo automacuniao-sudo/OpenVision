@@ -5,7 +5,8 @@ import UIKit
 
 struct DiagnosticsView: View {
     @StateObject private var logger = DiagnosticLogger.shared
-    @State private var copied = false
+    @State private var copiedAction: String?
+    @State private var showFullHistory = false
 
     var body: some View {
         List {
@@ -19,8 +20,10 @@ struct DiagnosticsView: View {
             }
 
             Section {
+                Toggle("Show Full History", isOn: $showFullHistory)
+
                 ScrollView {
-                    Text(logger.exportText.isEmpty ? "No diagnostic events yet." : logger.exportText)
+                    Text(displayedLog.isEmpty ? "No diagnostic events yet." : displayedLog)
                         .font(.system(.caption2, design: .monospaced))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -30,20 +33,41 @@ struct DiagnosticsView: View {
             } header: {
                 Text("Logs")
             } footer: {
-                Text("Logs may include speech transcripts and technical state, but never the Gemini API key.")
+                Text("By default, only the current app session is shown. Logs may include speech transcripts and technical state, but never the Gemini API key.")
             }
 
-            Section("Actions") {
+            Section("Quick Copy") {
                 Button {
-                    UIPasteboard.general.string = logger.exportText
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                    copy(logger.latestFailureContextText, action: "failure")
                 } label: {
-                    Label(copied ? "Copied" : "Copy Logs", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    Label(
+                        copiedAction == "failure" ? "Last Failure Copied" : "Copy Last Failure",
+                        systemImage: copiedAction == "failure" ? "checkmark" : "exclamationmark.triangle"
+                    )
+                }
+
+                Button {
+                    copy(logger.currentSessionText, action: "session")
+                } label: {
+                    Label(
+                        copiedAction == "session" ? "Session Copied" : "Copy Current Session",
+                        systemImage: copiedAction == "session" ? "checkmark" : "doc.on.doc"
+                    )
+                }
+            }
+
+            Section("Advanced") {
+                Button {
+                    copy(logger.exportText, action: "full")
+                } label: {
+                    Label(
+                        copiedAction == "full" ? "Full Log Copied" : "Copy Full Log",
+                        systemImage: copiedAction == "full" ? "checkmark" : "doc.on.doc.fill"
+                    )
                 }
 
                 ShareLink(item: logger.fileURL) {
-                    Label("Share Log File", systemImage: "square.and.arrow.up")
+                    Label("Share Full Log File", systemImage: "square.and.arrow.up")
                 }
 
                 Button(role: .destructive) {
@@ -55,5 +79,19 @@ struct DiagnosticsView: View {
         }
         .navigationTitle("Diagnostics")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var displayedLog: String {
+        showFullHistory ? logger.exportText : logger.currentSessionText
+    }
+
+    private func copy(_ text: String, action: String) {
+        UIPasteboard.general.string = text
+        copiedAction = action
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            if copiedAction == action {
+                copiedAction = nil
+            }
+        }
     }
 }
