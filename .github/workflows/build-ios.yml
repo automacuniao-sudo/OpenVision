@@ -47,27 +47,10 @@ jobs:
         run: |
           xcodegen generate
 
-      - name: Compilar testes (JARVISTests)
-        # Nao executamos os testes de fato (varias dependencias, como
-        # MLX/Metal e o SDK da camera dos oculos, nao compilam para o
-        # Simulador do iOS). Usamos o mesmo destino de dispositivo real
-        # que ja compila de forma estavel no passo seguinte, so que em
-        # modo build-for-testing: ainda pega erros de compilacao como o
-        # que quebrou o Build 35, sem precisar rodar nada.
-        run: |
-          xcodebuild \
-            -project JARVIS.xcodeproj \
-            -scheme JARVIS \
-            -configuration Debug \
-            -destination 'generic/platform=iOS' \
-            -skipMacroValidation \
-            -skipPackagePluginValidation \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            DEVELOPMENT_TEAM="" \
-            build-for-testing
-
-      - name: Compilar sem assinatura
+      - name: Compilar app e testes
+        # build-for-testing ja compila o app e o target de testes. Mantemos tudo no mesmo
+        # DerivedData e reutilizamos o JARVIS.app resultante para criar a IPA. Isso evita
+        # uma segunda compilacao completa das dependencias pesadas (MLX, xgrammar, FluidAudio).
         run: |
           xcodebuild \
             -project JARVIS.xcodeproj \
@@ -80,7 +63,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             DEVELOPMENT_TEAM="" \
-            build
+            build-for-testing
+
+      - name: Verificar produto compilado
+        if: github.event_name != 'pull_request'
+        run: |
+          test -d build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app
+          echo "JARVIS.app pronto para empacotamento"
 
       - name: Criar IPA
         if: github.event_name != 'pull_request'
