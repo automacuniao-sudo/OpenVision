@@ -11,7 +11,11 @@ on:
 
 jobs:
   build:
-    runs-on: macos-26
+    # macos-26 Arm64 provisioning is intermittently timing out before any step starts.
+    # macos-15 Arm64 is more widely available and already includes Xcode 26.3.
+    runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
     steps:
       - name: Baixar codigo
