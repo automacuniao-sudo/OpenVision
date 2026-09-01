@@ -1,0 +1,80 @@
+name: Apply Patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      patch_script:
+        description: Patch script basename from .github/patches
+        required: true
+        type: string
+      commit_message:
+        description: Commit message for the generated patch branch
+        required: true
+        type: string
+      pr_title:
+        description: Pull request title
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: apply-patch-dispatch
+  cancel-in-progress: false
+
+jobs:
+  apply-patch:
+    runs-on: ubuntu-latest
+    env:
+      PATCH_SCRIPT: ${{ inputs.patch_script }}
+      COMMIT_MESSAGE: ${{ inputs.commit_message }}
+      PR_TITLE: ${{ inputs.pr_title }}
+    steps:
+      - name: Check out product branch
+        uses: actions/checkout@v6
+        with:
+          ref: jarvis-dev
+          fetch-depth: 0
+
+      - name: Validate and run patch script
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          [[ -n "$COMMIT_MESSAGE" ]] || { echo "commit_message must not be empty" >&2; exit 1; }
+          [[ -n "$PR_TITLE" ]] || { echo "pr_title must not be empty" >&2; exit 1; }
+          [[ "$PATCH_SCRIPT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.py$ ]] || {
+            echo "patch_script must be an ASCII Python basename" >&2
+            exit 1
+          }
+          [[ "$PATCH_SCRIPT" != *".."* ]] || {
+            echo "patch_script must not contain .." >&2
+            exit 1
+          }
+
+          patch_root="$(realpath -- "$GITHUB_WORKSPACE/.github/patches")"
+          patch_path="$(realpath -- "$patch_root/$PATCH_SCRIPT")"
+          case "$patch_path" in
+            "$patch_root"/*) ;;
+            *) echo "patch_script must resolve under .github/patches" >&2; exit 1 ;;
+          esac
+          [[ -f "$patch_path" ]] || { echo "patch_script is not a regular file" >&2; exit 1; }
+
+          python3 "$patch_path"
+
+      - name: Commit and open patch pull request
+        shell: bash
+        env:
+          PR_BODY: compilacao dos testes portateis + compilacao completa para dispositivo
+        run: |
+          set -euo pipefail
+
+          patch_branch="patch/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch --create "$patch_branch"
+          git add --all
+          git diff --cached --quiet && { echo "Patch script produced no changes" >&2; exit 1; }
+          git commit -m "$COMMIT_MESSAGE"
+          git push --set-upstream origin "$patch_branch"
+          gh pr create --base jarvis-dev --head "$patch_branch" --title "$PR_TITLE" --body "$PR_BODY"
