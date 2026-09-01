@@ -264,3 +264,33 @@ Prioridade:
 5. preferência pessoal do agente.
 
 Se houver conflito ou ambiguidade com impacto arquitetural, o LEAD decide e registra a decisão antes da implementação.
+
+
+## 12. ORCHESTRATOR — modo automático
+
+Arquivo: `.agents/ORCHESTRATOR.md`
+
+O modo preferido para uso diário é um único chat `OpenVision — ORCHESTRATOR`.
+
+O ORCHESTRATOR:
+- atua como LEAD/controlador;
+- investiga e cria o Task Brief;
+- quando o ambiente disponibilizar delegação/subagentes, despacha um DEVELOPER isolado automaticamente;
+- recebe o Implementation Report;
+- revisa o diff;
+- devolve findings ao DEV até aprovação;
+- pode abrir PR após `APPROVED`;
+- nunca faz merge em `main` sem aprovação humana explícita.
+
+Importante:
+- o ORCHESTRATOR não deve fingir comunicação entre threads separadas;
+- se a sessão não oferecer delegação real, deve cair para o fluxo manual LEAD → usuário → DEV → usuário → LEAD;
+- threads `OpenVision — LEAD` e `OpenVision — DEV` continuam válidas como fallback e para diagnóstico.
+
+Para tarefas normais, prefira:
+
+```text
+USUÁRIO → ORCHESTRATOR/LEAD → DEVELOPER subagente → ORCHESTRATOR/LEAD → PR → HUMANO
+```
+
+Em tarefas independentes, múltiplos agentes só podem trabalhar em paralelo quando seus arquivos/estados não se sobrepõem.
