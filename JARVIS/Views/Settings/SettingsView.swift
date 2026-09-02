@@ -108,6 +108,12 @@ struct SettingsView: View {
                     }
 
                     NavigationLink {
+                        TelemetrySettingsView()
+                    } label: {
+                        Label("Telemetry", systemImage: "chart.line.uptrend.xyaxis")
+                    }
+
+                    NavigationLink {
                         DiagnosticsView()
                     } label: {
                         Label("Diagnostics / Logs", systemImage: "waveform.path.ecg")

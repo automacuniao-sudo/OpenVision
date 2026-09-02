@@ -253,6 +253,10 @@ struct VoiceAgentView: View {
                 .fontWeight(.medium)
                 .foregroundColor(Theme.textPrimary)
 
+            Text(viewModel.voiceStatusText)
+                .font(.caption)
+                .foregroundColor(viewModel.isVoiceReady ? Theme.textSecondary : .orange)
+
             // Tool status
             if let tool = viewModel.currentToolName, viewModel.agentState == .toolRunning {
                 ToolStatusView(toolName: tool, isRunning: true)

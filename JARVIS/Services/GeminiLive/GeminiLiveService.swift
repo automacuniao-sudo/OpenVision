@@ -309,7 +309,7 @@ final class GeminiLiveService: ObservableObject {
 
         You can see what the user sees when a glasses/camera stream is actually available. Never pretend you can currently see something if no image or video frame was provided.
 
-        Keep responses concise, natural, and conversational. The user is using JARVIS hands-free and expects quick answers.
+        Default to 1–3 short spoken sentences, natural and conversational. Expand only when the user explicitly asks for detail. The user is using JARVIS hands-free and expects quick answers.
 
         RESPOND IN BRAZILIAN PORTUGUESE (pt-BR). YOU MUST RESPOND UNMISTAKABLY IN BRAZILIAN PORTUGUESE unless the user explicitly asks for another language.
 
@@ -335,6 +335,7 @@ final class GeminiLiveService: ObservableObject {
         - last_search_sources: return real provenance/URLs from the most recent web_search; mandatory for source/link follow-ups.
         - memory: persistent JARVIS memory. When the user explicitly asks you to remember/save/store a stable fact, CALL memory(action="remember"). If they ask "você vai lembrar?" about a fact just stated, save that fact first, then say yes only after the tool confirms it. Use memory search/list/forget for memory questions and deletion.
         - voice_identity: enroll/verify/manage the owner's local voice profile and Owner Voice Lock. Use it when the user asks to cadastrar/minha voz, reconhecer quem está falando, ativar/desativar validação por voz, or forget the saved voice.
+        - SPEAKER IDENTITY RULE: never infer that the current voice matches or does not match the owner merely because a profile exists. Claim a match/mismatch only from a voice_identity verify result or the local Owner Voice Lock gate. When a verify result matches, speak directly to the user ("sim, reconheci sua voz"), not about them in the third person ("essa voz é do X"), unless they explicitly ask for the enrolled name.
 
         ACTION TRUTHFULNESS RULE: NEVER say "salvei", "anotei", "vou lembrar", "ativei", "desativei", "mudei" or otherwise claim a persistent setting/action succeeded unless the corresponding tool actually returned success in this turn. Conversation context is not persistent memory.
 
@@ -400,6 +401,7 @@ final class GeminiLiveService: ObservableObject {
     /// Notify that user stopped speaking
     func userStoppedSpeaking() {
         lastUserSpeechEnd = Date()
+        MetricsCollector.shared.markSpeechEnd()
     }
 
     /// Send text message to Gemini 3.1 Live.
@@ -655,10 +657,17 @@ final class GeminiLiveService: ObservableObject {
                     }
 
                     let pcmNow = Date()
-                    if !firstPCMSeenForTurn, let sentAt = currentTurnSentAt {
+                    if !firstPCMSeenForTurn {
                         firstPCMSeenForTurn = true
-                        let firstMs = Int(pcmNow.timeIntervalSince(sentAt) * 1000)
-                        DiagnosticLogger.shared.log("Latency", "Gemini send→firstPCM=\(firstMs)ms")
+                        MetricsCollector.shared.markFirstToken()
+                        // Gemini produces audio natively; there is no separate synthesizer. Treat
+                        // first PCM arrival as the hand-off to playback so perceived latency still
+                        // measures through to the first audible buffer.
+                        MetricsCollector.shared.markTTSRequested()
+                        if let sentAt = currentTurnSentAt {
+                            let firstMs = Int(pcmNow.timeIntervalSince(sentAt) * 1000)
+                            DiagnosticLogger.shared.log("Latency", "Gemini send→firstPCM=\(firstMs)ms")
+                        }
                     }
                     if let previousPCM = lastPCMReceivedAt {
                         let gapMs = pcmNow.timeIntervalSince(previousPCM) * 1000
@@ -719,6 +728,7 @@ final class GeminiLiveService: ObservableObject {
 
         // Turn complete comes LAST so we never discard sibling audio/transcription fields.
         if content["turnComplete"] as? Bool == true {
+            MetricsCollector.shared.markGenerationDone()
             // A locally interrupted response may still report its final boundary. Consume that
             // boundary without reopening conversation mode in the middle of the user's barge-in.
             if ignoreNextTurnComplete {
@@ -756,6 +766,10 @@ final class GeminiLiveService: ObservableObject {
         lastPCMReceivedAt = nil
         maxPCMGapMs = 0
 
+        if onAudioReceived == nil {
+            // Normal voice mode defers finishTurn until its local PCM queue is actually drained.
+            MetricsCollector.shared.markSpokeDone()
+        }
         DiagnosticLogger.shared.log("Gemini", "Turn complete")
         onTurnComplete?()
 

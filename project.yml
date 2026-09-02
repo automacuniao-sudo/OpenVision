@@ -12,7 +12,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "2.10.0"
-    CURRENT_PROJECT_VERSION: "39"
+    CURRENT_PROJECT_VERSION: "40"
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
@@ -40,9 +40,11 @@ targets:
     platform: iOS
     sources:
       - path: JARVIS/Utilities/TextChunking.swift
+      - path: JARVIS/Utilities/VoiceStopMatching.swift
       - path: JARVIS/Services/Documents/DocumentChunking.swift
       - path: JARVISTests/DocumentChunkingTests.swift
       - path: JARVISTests/TextChunkingTests.swift
+      - path: JARVISTests/VoiceStopMatchingTests.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

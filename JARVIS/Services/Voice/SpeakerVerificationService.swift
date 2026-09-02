@@ -149,8 +149,25 @@ final class SpeakerVerificationService: @unchecked Sendable {
         }
     }
 
+    /// Preload CAM++ so the first protected command does not pay model-load latency.
+    func warmUp() async {
+        let started = Date()
+        do {
+            try await embeddingEngine.warmUp()
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            log("CAM++ warm-up ready in \(ms)ms")
+        } catch {
+            log("CAM++ warm-up failed: \(error.localizedDescription)")
+        }
+    }
+
     func verifyRecentVoice(threshold: Float) async -> VerificationResult {
-        await verify(samples: snapshotRecentAudio(maxSeconds: 6.0), threshold: threshold)
+        let started = Date()
+        let samples = snapshotRecentAudio(maxSeconds: 4.0)
+        let result = await verify(samples: samples, threshold: threshold)
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        log(String(format: "Manual verify duration=%dms audio=%.2fs", ms, Double(samples.count) / 16_000.0))
+        return result
     }
 
     func verify(samples raw: [Float], threshold: Float) async -> VerificationResult {
@@ -277,6 +294,12 @@ final class SpeakerVerificationService: @unchecked Sendable {
 
 private actor SpeakerEmbeddingEngine {
     private var embedder: CampPlusEmbedder?
+
+    func warmUp() async throws {
+        if embedder == nil {
+            embedder = try await CampPlusEmbedder.load()
+        }
+    }
 
     func embedding(for samples: [Float]) async throws -> [Float] {
         if embedder == nil {

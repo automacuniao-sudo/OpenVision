@@ -56,8 +56,8 @@ final class VoiceAgentViewModel: ObservableObject {
     /// Set when live video mode starts; used by stop/callbacks so both backends route correctly.
     private var activeLiveService: (any LiveVideoService)?
 
-    /// Sentence-streaming TTS (Apple only): how many characters of the streamed reply have
-    /// already been handed to the speech queue, and whether a streamed utterance is open.
+    /// Sentence-streaming TTS: how many characters of the streamed reply have already been
+    /// handed to the active speech engine (Apple, Kokoro or Gemini Streaming TTS).
     private var ttsStreamSpokenChars = 0
     private var ttsStreaming = false
 
@@ -74,6 +74,17 @@ final class VoiceAgentViewModel: ObservableObject {
 
     /// Frame counter for logging
     private var videoFrameCount: Int = 0
+
+    var voiceStatusText: String {
+        if errorMessage != nil && !isVoiceReady { return "Microfone: indisponível" }
+        if isDirectGeminiVoiceMode { return "Microfone: Gemini Live direto" }
+        if settingsManager.settings.voiceOwnerLockEnabled && isSessionActive {
+            return voiceCommandService.isListening ? "Microfone: ouvindo + validação de voz" : "Microfone: validação de voz ativa"
+        }
+        if voiceCommandService.isListening { return "Microfone: ouvindo" }
+        if isVoiceReady { return "Microfone: pronto" }
+        return "Microfone: inicializando"
+    }
 
     // MARK: - Agent State
 
@@ -117,6 +128,11 @@ final class VoiceAgentViewModel: ObservableObject {
         setupVoiceCommandService()
         setupGlassesCallbacks()
         preloadLocalModelIfNeeded()
+        if SpeakerVerificationService.shared.hasOwnerProfile {
+            // Preload asynchronously whenever an owner profile exists so both manual "verify my
+            // voice" and Owner Voice Lock avoid the first-use CAM++ load penalty.
+            Task { await SpeakerVerificationService.shared.warmUp() }
+        }
         // Resume wake-word listening when returning to this screen. onDisappear stops it
         // (e.g. when navigating to Settings), and the one-time .task doesn't re-run on return —
         // so without this, the wake word stayed dead until you tapped the mic button.
@@ -141,6 +157,7 @@ final class VoiceAgentViewModel: ObservableObject {
             // (prevents microphone picking up TTS and triggering interruption)
             voiceCommandService.isBargeInPaused = true
         } else {
+            MetricsCollector.shared.markSpokeDone()
             // Resume barge-in detection
             voiceCommandService.isBargeInPaused = false
 
@@ -162,6 +179,7 @@ final class VoiceAgentViewModel: ObservableObject {
             agentState = .speaking
             voiceCommandService.isBargeInPaused = true
         } else {
+            MetricsCollector.shared.markSpokeDone()
             voiceCommandService.isBargeInPaused = false
             if isSessionActive {
                 agentState = .listening
@@ -347,12 +365,18 @@ final class VoiceAgentViewModel: ObservableObject {
                         }
                         voiceCommandService.enterConversationMode()
                     } else {
-                        errorMessage = "Speech recognition not authorized"
+                        reportVoiceError(
+                            "Speech recognition not authorized",
+                            spoken: "O reconhecimento de voz não está autorizado."
+                        )
                     }
                 }
 
             } catch {
-                errorMessage = "Failed to connect: \(error.localizedDescription)"
+                reportVoiceError(
+                    "Failed to connect: \(error.localizedDescription)",
+                    spoken: "Não consegui conectar ao serviço de inteligência agora. Verifique a conexão e tente novamente."
+                )
                 isSessionActive = false
                 agentState = .idle
             }
@@ -481,9 +505,26 @@ final class VoiceAgentViewModel: ObservableObject {
             && !settingsManager.settings.geminiAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var usingKokoroTTS: Bool {
+        settingsManager.settings.ttsEngine == .kokoro && KokoroTTSService.shared.isModelReady
+    }
+
+    private var canStreamSpeech: Bool {
+        shouldUseGeminiStreamingVoiceForOpenClaw || usingKokoroTTS || usingAppleTTS
+    }
+
+    private var activeTTSEngineTag: String {
+        if shouldUseGeminiStreamingVoiceForOpenClaw { return "gemini-streaming" }
+        if usingKokoroTTS { return "kokoro" }
+        return "apple"
+    }
+
     private func beginActiveStreamingTTS() {
+        MetricsCollector.shared.markTTSRequested()
         if shouldUseGeminiStreamingVoiceForOpenClaw {
             geminiStreamingTTS.beginStreaming()
+        } else if usingKokoroTTS {
+            KokoroTTSService.shared.beginStreaming()
         } else {
             ttsService.beginStreaming()
         }
@@ -492,6 +533,8 @@ final class VoiceAgentViewModel: ObservableObject {
     private func speakActiveStreamingChunk(_ text: String) {
         if shouldUseGeminiStreamingVoiceForOpenClaw {
             geminiStreamingTTS.speakChunk(text)
+        } else if usingKokoroTTS {
+            KokoroTTSService.shared.speakChunk(text, voice: settingsManager.settings.kokoroVoice)
         } else {
             ttsService.speakChunk(text)
         }
@@ -500,8 +543,20 @@ final class VoiceAgentViewModel: ObservableObject {
     private func endActiveStreamingTTS() {
         if shouldUseGeminiStreamingVoiceForOpenClaw {
             geminiStreamingTTS.endStreaming()
+        } else if usingKokoroTTS {
+            KokoroTTSService.shared.endStreaming()
         } else {
             ttsService.endStreaming()
+        }
+    }
+
+    private func stopActiveStreamingTTS() {
+        if shouldUseGeminiStreamingVoiceForOpenClaw {
+            geminiStreamingTTS.stop()
+        } else if usingKokoroTTS {
+            KokoroTTSService.shared.stop()
+        } else {
+            ttsService.stop()
         }
     }
 
@@ -628,7 +683,15 @@ final class VoiceAgentViewModel: ObservableObject {
     /// VoiceCommandService (so the stale transcript can't re-fire); here we just halt + end the turn.
     private func performFullStop() {
         let wasDirectGeminiVoice = isDirectGeminiVoiceMode
-        voiceCommandService.persistentConversationMode = false
+        let stayingInLiveVideo = isLiveVideoMode
+
+        MetricsCollector.shared.markInterrupted()
+        MetricsCollector.shared.markSpokeDone()
+
+        // A bare "stop" silences the current answer. Only "stop video" tears down live video.
+        if !stayingInLiveVideo {
+            voiceCommandService.persistentConversationMode = false
+        }
         if wasDirectGeminiVoice { stopDirectGeminiVoiceMode() }
         ttsService.stop()
         geminiStreamingTTS.stop()
@@ -646,14 +709,19 @@ final class VoiceAgentViewModel: ObservableObject {
             }
         }
 
-        if isLiveVideoMode {
-            Task { await stopLiveVideoMode() }
-        }
-
-        // Go quiet: end the turn, return to wake-word idle. Say "Ok Vision" to start again.
         userTranscript = ""
         aiTranscript = ""
         currentToolName = nil
+
+        if stayingInLiveVideo {
+            DiagnosticLogger.shared.log("Voice", "Stop silenced current reply; staying in live video")
+            voiceCommandService.persistentConversationMode = true
+            voiceCommandService.enterConversationMode()
+            agentState = .liveVideo
+            return
+        }
+
+        // Go quiet: end the turn, return to wake-word idle. Say "Ok Jarvis" to start again.
         isSessionActive = false
         agentState = .idle
 
@@ -693,7 +761,11 @@ final class VoiceAgentViewModel: ObservableObject {
             startWakeWordListening()
         } else {
             print("[VoiceAgent] Speech recognition not authorized")
-            errorMessage = "Speech recognition not authorized. Please enable in Settings."
+            isVoiceReady = false
+            reportVoiceError(
+                "Speech recognition not authorized. Please enable in Settings.",
+                spoken: "Não consegui acessar o reconhecimento de voz. Verifique a permissão do microfone e da fala nos Ajustes."
+            )
         }
     }
 
@@ -723,12 +795,24 @@ final class VoiceAgentViewModel: ObservableObject {
             HapticFeedback.medium()
             self.soundService.playWakeWordSound()
 
-            // If TTS is speaking, stop it immediately (interrupt)
-            if self.ttsService.isSpeaking {
-                print("[VoiceAgent] Stopping TTS due to wake word interrupt")
+            // If any reply/generation path owns the floor, a wake is an interruption.
+            let interrupting = self.ttsService.isSpeaking
+                || self.geminiStreamingTTS.isSpeaking
+                || KokoroTTSService.shared.isSpeaking
+                || GeminiLiveService.shared.isModelSpeaking
+                || GeminiLiveService.shared.isProcessing
+                || OpenClawService.shared.isProcessing
+                || OpenClawService.shared.isToolRunning
+                || self.audioPlayback.isPlaying
+                || self.agentState == .thinking
+                || self.agentState == .toolRunning
+            if interrupting {
+                print("[VoiceAgent] Stopping active reply due to wake word interrupt")
+                MetricsCollector.shared.markInterrupted()
+                MetricsCollector.shared.markSpokeDone()
                 self.ttsService.stop()
                 self.geminiStreamingTTS.stop()
-                self.ttsStreaming = false   // keep flag in sync with the cleared stream
+                self.ttsStreaming = false
                 KokoroTTSService.shared.stop()
                 self.audioPlayback.stop()
                 // Cancel any in-flight on-device generation too — otherwise its next streamed
@@ -766,6 +850,12 @@ final class VoiceAgentViewModel: ObservableObject {
             }
 
             self.userTranscript = command
+            let backend = self.settingsManager.settings.aiBackend
+            MetricsCollector.shared.markCommit(
+                backend: backend.rawValue,
+                model: backend == .localGemma ? self.settingsManager.settings.localGemmaModelId : nil,
+                ttsEngine: self.activeTTSEngineTag
+            )
             // Gemini Live output transcription is streamed in small fragments. Reset the reply
             // accumulator at the start of EVERY captured command so History stores one complete
             // assistant message for this turn rather than the final fragment only.
@@ -787,6 +877,8 @@ final class VoiceAgentViewModel: ObservableObject {
         voiceCommandService.onInterruption = { [weak self] in
             guard let self else { return }
             print("[VoiceAgent] Barge-in detected")
+            MetricsCollector.shared.markInterrupted()
+            MetricsCollector.shared.markSpokeDone()
 
             // Stop every local output path immediately. Gemini normal voice uses its own
             // fallback player, which is stopped by GeminiLiveService.interrupt() below.
@@ -843,6 +935,8 @@ final class VoiceAgentViewModel: ObservableObject {
                 // while the user was silently looking around.
                 guard self.isSessionActive || self.isLiveVideoMode else { return }
                 self.aiTranscript = message
+                MetricsCollector.shared.markFirstToken()
+                MetricsCollector.shared.markGenerationDone()
                 if self.ttsStreaming {
                     // A streamed utterance is open (local model + Apple TTS pipelining):
                     // flush the unspoken tail and close the session.
@@ -859,6 +953,7 @@ final class VoiceAgentViewModel: ObservableObject {
                     self.ttsStreaming = false
                     self.ttsStreamSpokenChars = 0
                 } else {
+                    MetricsCollector.shared.markGenerationDone()
                     // Generation ended (always fires via defer, even when interrupted/superseded).
                     // If a streamed utterance is still open, onAgentMessage never fired to close it —
                     // close it here so streamingActive/isSpeaking don't stick true and freeze the
@@ -867,7 +962,11 @@ final class VoiceAgentViewModel: ObservableObject {
                         self.endActiveStreamingTTS()
                         self.ttsStreaming = false
                     }
-                    if self.agentState == .thinking && !self.ttsService.isSpeaking {
+                    if self.agentState == .thinking
+                        && !self.ttsService.isSpeaking
+                        && !KokoroTTSService.shared.isSpeaking
+                        && !self.geminiStreamingTTS.isSpeaking
+                        && !self.audioPlayback.isPlaying {
                         // Return to the live video indicator, not plain listening, while in live mode.
                         self.agentState = self.isLiveVideoMode ? .liveVideo
                             : (self.isSessionActive ? .listening : .idle)
@@ -882,10 +981,10 @@ final class VoiceAgentViewModel: ObservableObject {
             guard self.isSessionActive || self.isLiveVideoMode else { return }
             // Show tokens as they stream so it doesn't look stuck on "thinking".
             self.aiTranscript = partial
-            // Apple TTS: start speaking completed sentences as they arrive (pipeline speech
-            // behind generation) instead of waiting for the whole reply. Big perceived speedup,
-            // and Apple TTS isn't on the GPU so it doesn't fight the on-device model.
-            if self.usingAppleTTS { self.feedStreamingSpeech(partial, isFinal: false) }
+            MetricsCollector.shared.markFirstToken()
+            // Start speaking completed sentences as they arrive. Apple TTS does this without GPU
+            // contention; Kokoro now uses a single FIFO drainer so chunks remain ordered.
+            if self.canStreamSpeech { self.feedStreamingSpeech(partial, isFinal: false) }
         }
 
         // OpenClaw partial text is a cumulative snapshot. Speak completed sentences while
@@ -893,6 +992,7 @@ final class VoiceAgentViewModel: ObservableObject {
         OpenClawService.shared.onPartialResponse = { [weak self] (partial: String) in
             guard let self, self.isSessionActive else { return }
             self.aiTranscript = partial
+            MetricsCollector.shared.markFirstToken()
             self.feedStreamingSpeech(partial, isFinal: false)
         }
 
@@ -903,6 +1003,7 @@ final class VoiceAgentViewModel: ObservableObject {
         }
         geminiStreamingTTS.onSpeechEnded = { [weak self] in
             guard let self else { return }
+            MetricsCollector.shared.markSpokeDone()
             self.voiceCommandService.isBargeInPaused = false
             if self.isSessionActive {
                 self.agentState = .listening
@@ -954,14 +1055,35 @@ final class VoiceAgentViewModel: ObservableObject {
                 self.aiTranscript = ""
                 self.historyLastLiveReply = ""
                 self.directGeminiAwaitingNewInput = false
+                // Gemini owns endpointing in raw-PCM mode. The first input-transcript fragment is
+                // the closest client-side boundary we receive, so use it as the approximate turn
+                // commit marker for diagnostics. Secure STT mode uses the exact local VAD path.
+                MetricsCollector.shared.markSpeechEnd()
+                MetricsCollector.shared.markCommit(
+                    backend: AIBackendType.geminiLive.rawValue,
+                    model: nil,
+                    ttsEngine: "gemini-audio"
+                )
             }
             self.userTranscript += text
+
+            // In raw-PCM Gemini mode the audio has already reached the server before its input
+            // transcription returns, so it cannot be "unsent" without giving up full-duplex.
+            // Still enforce local stop semantics at the earliest observable boundary: silence
+            // playback/turn immediately and suppress any late PCM from that response.
+            if VoiceStopMatching.isBareStopCommand(self.userTranscript) {
+                DiagnosticLogger.shared.log("Voice", "Direct Gemini stop detected from input transcription")
+                self.performFullStop()
+                return
+            }
+
             self.agentState = .listening
             self.armDirectGeminiResponseWatchdog()
         }
 
         GeminiLiveService.shared.onOutputTranscription = { [weak self] (text: String) in
             guard let self else { return }
+            MetricsCollector.shared.markFirstToken()
             self.directGeminiResponseWatchdogTask?.cancel()
             self.directGeminiResponseWatchdogTask = nil
             // Gemini sends outputAudioTranscription incrementally (often word/phrase fragments).
@@ -971,6 +1093,8 @@ final class VoiceAgentViewModel: ObservableObject {
 
         GeminiLiveService.shared.onInterrupted = { [weak self] in
             guard let self, self.isDirectGeminiVoiceMode else { return }
+            MetricsCollector.shared.markInterrupted()
+            MetricsCollector.shared.markSpokeDone()
             // The user's barge-in starts a new semantic turn immediately. Keep the same socket/mic;
             // only reset transcript bookkeeping so the next utterance does not concatenate onto the
             // previous turn.
@@ -1039,7 +1163,11 @@ final class VoiceAgentViewModel: ObservableObject {
             print("[VoiceAgent] Started wake word listening - READY")
         } catch {
             print("[VoiceAgent] Failed to start listening: \(error)")
-            errorMessage = error.localizedDescription
+            isVoiceReady = false
+            reportVoiceError(
+                error.localizedDescription,
+                spoken: "Não consegui iniciar o microfone. Verifique o áudio e tente novamente."
+            )
         }
     }
 
@@ -1049,13 +1177,8 @@ final class VoiceAgentViewModel: ObservableObject {
     private func sendCommand(_ command: String) async {
         let lowerCommand = command.lowercased()
 
-        // Check for "stop" command - stops TTS and waits for next command
-        let stopKeywords = [
-            "stop", "be quiet", "shut up", "silence", "quiet", "enough", "ok stop", "okay stop",
-            "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "cancele a resposta"
-        ]
-        let isStopCommand = stopKeywords.contains { lowerCommand.contains($0) } &&
-                           !lowerCommand.contains("video") && !lowerCommand.contains("stream")
+        // Deterministic stop routing shared with the speech recognizer and covered by pure tests.
+        let isStopCommand = VoiceStopMatching.isBareStopCommand(lowerCommand)
 
         if isStopCommand {
             print("[VoiceAgent] Stop command detected - full stop")
@@ -1068,12 +1191,7 @@ final class VoiceAgentViewModel: ObservableObject {
                                  "enable video", "live mode", "go live", "video mode"]
 
         let isStartLiveCommand = startLiveKeywords.contains { lowerCommand.contains($0) }
-        // Fuzzy stop match: any "video"/"stream" phrase with a stop-like word. Tolerates Apple STT
-        // dropping the leading 's' ("stop video" → "top video"), which previously sailed past the
-        // exact-keyword list and got sent to the model as a question instead of ending the mode.
-        let mentionsVideo = lowerCommand.contains("video") || lowerCommand.contains("stream")
-        let stopWords = ["stop", "top ", "end ", "exit", "disable", "close", "quit", "turn off"]
-        let isStopLiveCommand = mentionsVideo && stopWords.contains { lowerCommand.contains($0) }
+        let isStopLiveCommand = VoiceStopMatching.isLiveVideoStopCommand(lowerCommand)
 
         // Handle live video mode commands
         if isStartLiveCommand {
@@ -1707,7 +1825,7 @@ final class VoiceAgentViewModel: ObservableObject {
         // starting with "{", so we only begin speaking once the streamed output's first non-space
         // char proves it's a plain answer — never for a structured route.
         let result: LocalAgent.RouteResult
-        if usingAppleTTS {
+        if canStreamSpeech {
             ttsStreaming = false
             ttsStreamSpokenChars = 0
             result = await llm.routeCommandStreaming(command) { [weak self] cumulative in
@@ -1723,10 +1841,10 @@ final class VoiceAgentViewModel: ObservableObject {
         switch result {
         case .face(let intent):
             // Safety: if we mis-started streaming (answer contained a stray "{"), cancel it.
-            if ttsStreaming { ttsService.stop(); ttsStreaming = false }
+            if ttsStreaming { stopActiveStreamingTTS(); ttsStreaming = false }
             await handleFaceIntent(intent)
         case .webSearch(let query):
-            if ttsStreaming { ttsService.stop(); ttsStreaming = false }
+            if ttsStreaming { stopActiveStreamingTTS(); ttsStreaming = false }
             NSLog("[OV] web search: \"%@\"", query)
             var result = await WebSearchService.search(query)
             // Agentic retry: if the first query found nothing, let the model reformulate once.
@@ -2000,16 +2118,25 @@ final class VoiceAgentViewModel: ObservableObject {
         print("[VoiceAgent] Glasses callbacks configured")
     }
 
+    private func reportVoiceError(_ message: String, spoken: String) {
+        errorMessage = message
+        DiagnosticLogger.shared.log("Voice", "ERROR: \(message)")
+        // Use the system voice for error reporting because it is always available, even when the
+        // selected neural/cloud TTS failed or was never initialized.
+        if !ttsService.isSpeaking {
+            ttsService.speak(spoken)
+        }
+    }
+
     // MARK: - TTS Integration
 
-    /// True when the active speech engine is Apple's system voice (not Kokoro). Apple TTS runs on
-    /// a system audio service — not the Metal GPU — so it can pipeline speech while the on-device
-    /// model is still generating, with no resource contention.
+    /// True when the active speech engine is Apple's system voice. Kokoro also supports streaming
+    /// in Build 40, but Apple remains the no-GPU-contention path.
     private var usingAppleTTS: Bool {
         !(settingsManager.settings.ttsEngine == .kokoro && KokoroTTSService.shared.isModelReady)
     }
 
-    /// Feed the streamed reply to Apple TTS sentence-by-sentence. `cumulative` is the full text so
+    /// Feed the streamed reply to the active TTS engine sentence-by-sentence. `cumulative` is the full text so
     /// far (the local model emits a growing snapshot each token). On non-final calls we speak only
     /// the sentences that have fully completed; on the final call we flush whatever remains.
     private func feedStreamingSpeech(_ cumulative: String, isFinal: Bool) {
@@ -2049,6 +2176,7 @@ final class VoiceAgentViewModel: ObservableObject {
     private func speakResponse(_ text: String) {
         guard !text.isEmpty else { return }
         recordAssistantReply(text)
+        MetricsCollector.shared.markTTSRequested()
         if shouldUseGeminiStreamingVoiceForOpenClaw {
             // Same configured Google voice as Gemini Live (Charon by default).
             geminiStreamingTTS.speak(text)

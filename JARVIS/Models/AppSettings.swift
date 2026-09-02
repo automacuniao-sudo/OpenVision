@@ -90,6 +90,18 @@ struct AppSettings: Codable, Equatable {
     var selectedVoiceIdentifier: String? = nil
     var ttsEngine: TTSEngineType = .appleSystem
     var kokoroVoice: String = "af_heart"
+
+    // MARK: - Telemetry (opt-in, self-hosted)
+    // Numeric timing/device metrics only — never transcripts, prompts, replies or tool arguments.
+    var telemetryEnabled: Bool = false
+    var telemetryURL: String = ""
+    var telemetryBucket: String = "metrics"
+    var telemetryOrg: String = "jarvis"
+    var telemetryToken: String = ""
+    var telemetryUsername: String = ""
+    var telemetryPassword: String = ""
+    var telemetryDeviceName: String = "iphone"
+
     var preferGlassesMic: Bool = true
 
     /// Beta speaker-verification lock. When enabled, JARVIS verifies each STT command locally

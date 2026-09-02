@@ -149,6 +149,8 @@ final class AudioPlaybackService: ObservableObject {
 
         if !player.isPlaying {
             player.play()
+            MetricsCollector.shared.markFirstAudio()
+            DiagnosticLogger.shared.log("Latency", "PCM playback first audible buffer")
         }
 
         isPlaying = true

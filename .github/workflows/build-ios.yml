@@ -9,6 +9,12 @@ on:
     branches:
       - jarvis-dev
 
+# A PR synchronize event is emitted for every pushed fix. Keep only the newest commit running so
+# old Build 40 attempts do not keep consuming Intel runners and compiling MLX after they are obsolete.
+concurrency:
+  group: jarvis-ios-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     # macos-26 Arm64 provisioning timed out repeatedly on this PR. Use the separate
@@ -47,6 +53,30 @@ jobs:
         run: |
           xcodegen generate
 
+      - name: Resolver pacotes Swift de forma isolada
+        run: |
+          set -euo pipefail
+          mkdir -p build
+
+          # GitHub's prewarmed global SwiftPM repository cache can occasionally contain a
+          # half-removed clone (observed as exit 74 for mlx-swift). Keep this workflow independent
+          # from that cache and retry package resolution on the runner-local SourcePackages path.
+          for attempt in 1 2 3; do
+            echo "Package resolution attempt $attempt/3"
+            rm -rf "$HOME/Library/Caches/org.swift.swiftpm/repositories"
+            if xcodebuild               -resolvePackageDependencies               -project JARVIS.xcodeproj               -scheme JARVIS               -clonedSourcePackagesDirPath build/SourcePackages               -disablePackageRepositoryCache; then
+              break
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "Package resolution failed after 3 attempts"
+              exit 74
+            fi
+
+            rm -rf build/SourcePackages
+            sleep $((attempt * 5))
+          done
+
       - name: Executar testes portateis no simulador
         run: |
           set -euo pipefail
@@ -71,6 +101,8 @@ jobs:
             -scheme JARVISPureTests \
             -configuration Debug \
             -destination "platform=iOS Simulator,id=$simulator_id" \
+            -clonedSourcePackagesDirPath build/SourcePackages \
+            -disablePackageRepositoryCache \
             test
 
       - name: Compilar app e bundle completo de testes para dispositivo (sem executar)
@@ -86,6 +118,8 @@ jobs:
             -configuration Debug \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/DerivedData \
+            -clonedSourcePackagesDirPath build/SourcePackages \
+            -disablePackageRepositoryCache \
             -skipMacroValidation \
             -skipPackagePluginValidation \
             CODE_SIGNING_ALLOWED=NO \
