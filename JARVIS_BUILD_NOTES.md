@@ -1,3 +1,32 @@
+## Build 40 — audio latency, streaming, interruption and observability
+
+- Kokoro now supports real sentence streaming with a single FIFO drainer: beginStreaming, speakChunk, endStreaming.
+- Kokoro cancellation discards in-flight synthesis and clears queued/pending playback so stale sentences cannot resume after barge-in.
+- Local model and OpenClaw partial responses can feed the active TTS engine while generation is still running.
+- Barge-in/wake interruption now considers Apple TTS, Kokoro, Gemini Streaming TTS, Gemini Live, OpenClaw, PCM playback, thinking and tool-running states.
+- Bare stop silences/cancels the current response; stop video exits live mode. Stop matching is centralized and pure-tested so words such as desktop do not false-trigger.
+- Owner Voice Lock preserves its secure Apple STT → local CAM++ verification → verified text → Gemini path; normal Gemini keeps raw PCM full-duplex.
+- CAM++ prewarms asynchronously when an owner voice profile exists, and command/manual verification uses at most the most recent 4 seconds of speech to reduce latency.
+- Added numeric turn telemetry: endpoint, TTFT, generation, TTS TTFB, perceived latency, total duration, interruption/failure, backend/model/TTS tags and STT event counts.
+- Diagnostics now receives the compact per-turn latency breakdown even when optional InfluxDB/Grafana push is disabled.
+- Apple TTS, Kokoro and PCM playback mark first audible audio at the actual playback boundary.
+- Gemini Live records first PCM, generation/turn completion and PCM gaps; direct raw-PCM mode keeps its existing low-latency architecture.
+- Local MLX generation records exact library token count/generate time for tokens/sec, allowing Kokoro-vs-model GPU contention to be measured.
+- Added optional self-hosted InfluxDB/Grafana telemetry and a native Telemetry settings screen; numeric metrics only, never transcripts/prompts/replies.
+- Critical microphone/speech/backend connection errors are shown and spoken.
+- Voice screen shows explicit microphone readiness/mode status.
+- Spoken replies are tightened toward 1–3 short sentences unless the user asks for detail.
+- App build number is 40; marketing version remains 2.10.0.
+
+### Build 40 device test gates
+
+- Gemini Live, Owner Lock OFF: raw PCM conversation, repeated turns, barge-in while speaking/thinking, no regression in session persistence.
+- Owner Lock ON: verify [Latency] Speaker verification=...ms; owner passes, other speaker is rejected; compare perceived latency.
+- Kokoro: first sentence starts before final generation, sentence order stays correct, interruption leaves no stale playback.
+- Stop routing: stop/pare silence; desktop does not stop; stop video exits live video.
+- Apple TTS and Gemini Streaming TTS: stream/cancel/resume correctly.
+- Diagnostics: each completed turn emits endpoint/TTFT/TTS TTFB/perceived/total latency.
+- Long local-model + Kokoro session: compare tokens/sec and thermal state for GPU contention.
 
 ## Build 35 — deterministic grounding + direct OpenClaw PC actions
 - Conversation runtime intentionally unchanged from Build 34.
