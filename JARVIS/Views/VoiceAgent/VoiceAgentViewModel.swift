@@ -1151,16 +1151,8 @@ final class VoiceAgentViewModel: ObservableObject {
     private func sendCommand(_ command: String) async {
         let lowerCommand = command.lowercased()
 
-        // Deterministic bare-stop command. Match a whole leading phrase, not a substring: the old
-        // contains("stop") matcher treated words such as "desktop" as a stop command.
-        let normalizedStopCommand = lowerCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stopKeywords = [
-            "stop", "be quiet", "shut up", "silence", "quiet", "enough", "ok stop", "okay stop",
-            "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "cancele a resposta"
-        ]
-        let isStopCommand = stopKeywords.contains {
-            normalizedStopCommand == $0 || normalizedStopCommand.hasPrefix($0 + " ")
-        } && !normalizedStopCommand.contains("video") && !normalizedStopCommand.contains("stream")
+        // Deterministic stop routing shared with the speech recognizer and covered by pure tests.
+        let isStopCommand = VoiceStopMatching.isBareStopCommand(lowerCommand)
 
         if isStopCommand {
             print("[VoiceAgent] Stop command detected - full stop")
@@ -1173,12 +1165,7 @@ final class VoiceAgentViewModel: ObservableObject {
                                  "enable video", "live mode", "go live", "video mode"]
 
         let isStartLiveCommand = startLiveKeywords.contains { lowerCommand.contains($0) }
-        // Fuzzy stop match: any "video"/"stream" phrase with a stop-like word. Tolerates Apple STT
-        // dropping the leading 's' ("stop video" → "top video"), which previously sailed past the
-        // exact-keyword list and got sent to the model as a question instead of ending the mode.
-        let mentionsVideo = lowerCommand.contains("video") || lowerCommand.contains("stream")
-        let stopWords = ["stop", "top ", "end ", "exit", "disable", "close", "quit", "turn off"]
-        let isStopLiveCommand = mentionsVideo && stopWords.contains { lowerCommand.contains($0) }
+        let isStopLiveCommand = VoiceStopMatching.isLiveVideoStopCommand(lowerCommand)
 
         // Handle live video mode commands
         if isStartLiveCommand {
