@@ -44,8 +44,8 @@ struct VoiceIdentityTool: NativeTool {
                     : "Ainda não existe um perfil de voz cadastrado."
             }
             return result.isMatch
-                ? String(format: "Voz reconhecida como %@ (similaridade %.2f).", service.ownerProfileName ?? "proprietário", score)
-                : String(format: "A voz atual não corresponde ao proprietário cadastrado (similaridade %.2f).", score)
+                ? String(format: "A voz atual corresponde ao perfil do proprietário %@ (similaridade %.2f). Responda diretamente ao usuário em segunda pessoa; não o apresente como uma terceira pessoa.", service.ownerProfileName ?? "cadastrado", score)
+                : String(format: "A voz atual não corresponde ao proprietário cadastrado (similaridade %.2f). Não atribua outra identidade sem evidência.", score)
 
         case "enable_lock":
             guard service.hasOwnerProfile else {
