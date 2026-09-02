@@ -95,6 +95,9 @@ final class MetricsCollector: ObservableObject {
     func beginTurn() {
         if currentTurn != nil { abandonTurn() }
         currentTurn = TurnTimeline(startedAt: Date())
+        // One cheap device sample per turn even when the optional periodic/push telemetry is off.
+        // This makes thermal/memory regressions visible from Diagnostics during local LLM + Kokoro tests.
+        sampleNow()
     }
 
     /// VAD (or the fallback timer) decided the user stopped speaking.
@@ -215,12 +218,17 @@ final class MetricsCollector: ObservableObject {
             guard let value else { return "-" }
             return String(Int((value * 1000).rounded()))
         }
+        sampleNow()
+        let device = latestSystem
         DiagnosticLogger.shared.log(
             "Latency",
             "turn backend=\(turn.backend ?? "-") tts=\(turn.ttsEngine ?? "-") " +
             "endpoint=\(ms(turn.commitDuration))ms ttft=\(ms(turn.timeToFirstToken))ms " +
             "gen=\(ms(turn.generationSecondsBestEffort))ms ttsTTFB=\(ms(turn.ttsTimeToFirstByte))ms " +
             "perceived=\(ms(turn.perceivedLatency))ms total=\(ms(turn.totalDuration))ms " +
+            "tok_s=\(turn.tokensPerSecond.map { String(format: "%.1f", $0) } ?? "-") " +
+            "thermal=\(device.map { String(describing: $0.thermalState) } ?? "-") " +
+            "mem=\(device.map { String(format: "%.0fMB", $0.memoryFootprintMB) } ?? "-") " +
             "interrupted=\(turn.interrupted) abandoned=\(turn.abandoned)"
         )
     }
