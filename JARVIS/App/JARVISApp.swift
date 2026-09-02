@@ -57,6 +57,10 @@ struct JARVISApp: App {
                 }
             }
             .preferredColorScheme(.dark)
+            .task {
+                // Restore optional self-hosted metrics after relaunch; marking itself is always cheap.
+                MetricsCollector.shared.restoreAtLaunch()
+            }
             .onOpenURL { url in
                 handleURL(url)
             }
