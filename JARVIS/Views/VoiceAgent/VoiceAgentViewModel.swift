@@ -936,7 +936,11 @@ final class VoiceAgentViewModel: ObservableObject {
                         self.endActiveStreamingTTS()
                         self.ttsStreaming = false
                     }
-                    if self.agentState == .thinking && !self.ttsService.isSpeaking {
+                    if self.agentState == .thinking
+                        && !self.ttsService.isSpeaking
+                        && !KokoroTTSService.shared.isSpeaking
+                        && !self.geminiStreamingTTS.isSpeaking
+                        && !self.audioPlayback.isPlaying {
                         // Return to the live video indicator, not plain listening, while in live mode.
                         self.agentState = self.isLiveVideoMode ? .liveVideo
                             : (self.isSessionActive ? .listening : .idle)
@@ -1025,6 +1029,15 @@ final class VoiceAgentViewModel: ObservableObject {
                 self.aiTranscript = ""
                 self.historyLastLiveReply = ""
                 self.directGeminiAwaitingNewInput = false
+                // Gemini owns endpointing in raw-PCM mode. The first input-transcript fragment is
+                // the closest client-side boundary we receive, so use it as the approximate turn
+                // commit marker for diagnostics. Secure STT mode uses the exact local VAD path.
+                MetricsCollector.shared.markSpeechEnd()
+                MetricsCollector.shared.markCommit(
+                    backend: AIBackendType.geminiLive.rawValue,
+                    model: nil,
+                    ttsEngine: "gemini-audio"
+                )
             }
             self.userTranscript += text
             self.agentState = .listening
@@ -1033,6 +1046,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
         GeminiLiveService.shared.onOutputTranscription = { [weak self] (text: String) in
             guard let self else { return }
+            MetricsCollector.shared.markFirstToken()
             self.directGeminiResponseWatchdogTask?.cancel()
             self.directGeminiResponseWatchdogTask = nil
             // Gemini sends outputAudioTranscription incrementally (often word/phrase fragments).
