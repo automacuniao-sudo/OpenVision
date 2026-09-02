@@ -40,9 +40,11 @@ targets:
     platform: iOS
     sources:
       - path: JARVIS/Utilities/TextChunking.swift
+      - path: JARVIS/Utilities/VoiceStopMatching.swift
       - path: JARVIS/Services/Documents/DocumentChunking.swift
       - path: JARVISTests/DocumentChunkingTests.swift
       - path: JARVISTests/TextChunkingTests.swift
+      - path: JARVISTests/VoiceStopMatchingTests.swift
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
