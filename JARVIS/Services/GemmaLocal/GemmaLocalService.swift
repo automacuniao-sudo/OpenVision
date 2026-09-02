@@ -743,7 +743,7 @@ final class GemmaLocalService: ObservableObject {
 
         // Keep replies short — this is spoken aloud on glasses, so long answers get tiresome
         // (and the TTS cuts off after ~a minute). Aim for a couple of natural sentences.
-        var brevity = "You are a hands-free voice assistant for smart glasses. Reply in 2–4 natural sentences — enough detail to be genuinely useful and give a real sense of things, but brief enough to hear comfortably (around 20–30 seconds). Be specific and concrete, not vague. No lists, no markdown, no preamble; just answer."
+        var brevity = "You are a hands-free voice assistant for smart glasses. Default to 1–3 short natural spoken sentences. Expand only when the user explicitly asks for detail. Be specific and concrete, not vague. No lists, no markdown, no preamble; just answer."
         // Hallucination defense: SmolVLM confidently invents details it can't see (research puts
         // its "describe a thing that isn't there" rate near 94%, dropping to ~22% with a grounding
         // prompt). Anchor it to THIS frame and let it admit uncertainty rather than guess — this is
