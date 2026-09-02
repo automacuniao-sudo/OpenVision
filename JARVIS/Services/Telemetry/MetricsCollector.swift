@@ -208,5 +208,20 @@ final class MetricsCollector: ObservableObject {
         recentTurns.insert(turn, at: 0)
         if recentTurns.count > maxHistory { recentTurns.removeLast(recentTurns.count - maxHistory) }
         for sink in sinks { sink.record(turn: turn) }
+
+        // Always mirror a compact numeric summary into Diagnostics. This makes a pasted device log
+        // sufficient to answer "where was the delay?" without requiring the optional Grafana stack.
+        func ms(_ value: TimeInterval?) -> String {
+            guard let value else { return "-" }
+            return String(Int((value * 1000).rounded()))
+        }
+        DiagnosticLogger.shared.log(
+            "Latency",
+            "turn backend=\(turn.backend ?? "-") tts=\(turn.ttsEngine ?? "-") " +
+            "endpoint=\(ms(turn.commitDuration))ms ttft=\(ms(turn.timeToFirstToken))ms " +
+            "gen=\(ms(turn.generationSecondsBestEffort))ms ttsTTFB=\(ms(turn.ttsTimeToFirstByte))ms " +
+            "perceived=\(ms(turn.perceivedLatency))ms total=\(ms(turn.totalDuration))ms " +
+            "interrupted=\(turn.interrupted) abandoned=\(turn.abandoned)"
+        )
     }
 }
