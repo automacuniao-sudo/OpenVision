@@ -9,6 +9,12 @@ on:
     branches:
       - jarvis-dev
 
+# A PR synchronize event is emitted for every pushed fix. Keep only the newest commit running so
+# old Build 40 attempts do not keep consuming Intel runners and compiling MLX after they are obsolete.
+concurrency:
+  group: jarvis-ios-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   build:
     # macos-26 Arm64 provisioning timed out repeatedly on this PR. Use the separate
