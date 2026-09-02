@@ -13,6 +13,7 @@ final class VoiceStopMatchingTests: XCTestCase {
         XCTAssertFalse(VoiceStopMatching.isBareStopCommand("desktop"))
         XCTAssertFalse(VoiceStopMatching.isBareStopCommand("abra o desktop"))
         XCTAssertFalse(VoiceStopMatching.isBareStopCommand("estou no desktop"))
+        XCTAssertFalse(VoiceStopMatching.isBareStopCommand("para que serve o bluetooth"))
     }
 
     func testVideoStopIsSeparate() {
