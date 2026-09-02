@@ -661,7 +661,15 @@ final class VoiceAgentViewModel: ObservableObject {
     /// VoiceCommandService (so the stale transcript can't re-fire); here we just halt + end the turn.
     private func performFullStop() {
         let wasDirectGeminiVoice = isDirectGeminiVoiceMode
-        voiceCommandService.persistentConversationMode = false
+        let stayingInLiveVideo = isLiveVideoMode
+
+        MetricsCollector.shared.markInterrupted()
+        MetricsCollector.shared.markSpokeDone()
+
+        // A bare "stop" silences the current answer. Only "stop video" tears down live video.
+        if !stayingInLiveVideo {
+            voiceCommandService.persistentConversationMode = false
+        }
         if wasDirectGeminiVoice { stopDirectGeminiVoiceMode() }
         ttsService.stop()
         geminiStreamingTTS.stop()
@@ -679,14 +687,19 @@ final class VoiceAgentViewModel: ObservableObject {
             }
         }
 
-        if isLiveVideoMode {
-            Task { await stopLiveVideoMode() }
-        }
-
-        // Go quiet: end the turn, return to wake-word idle. Say "Ok Vision" to start again.
         userTranscript = ""
         aiTranscript = ""
         currentToolName = nil
+
+        if stayingInLiveVideo {
+            DiagnosticLogger.shared.log("Voice", "Stop silenced current reply; staying in live video")
+            voiceCommandService.persistentConversationMode = true
+            voiceCommandService.enterConversationMode()
+            agentState = .liveVideo
+            return
+        }
+
+        // Go quiet: end the turn, return to wake-word idle. Say "Ok Jarvis" to start again.
         isSessionActive = false
         agentState = .idle
 
@@ -1107,13 +1120,16 @@ final class VoiceAgentViewModel: ObservableObject {
     private func sendCommand(_ command: String) async {
         let lowerCommand = command.lowercased()
 
-        // Check for "stop" command - stops TTS and waits for next command
+        // Deterministic bare-stop command. Match a whole leading phrase, not a substring: the old
+        // contains("stop") matcher treated words such as "desktop" as a stop command.
+        let normalizedStopCommand = lowerCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         let stopKeywords = [
             "stop", "be quiet", "shut up", "silence", "quiet", "enough", "ok stop", "okay stop",
             "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "cancele a resposta"
         ]
-        let isStopCommand = stopKeywords.contains { lowerCommand.contains($0) } &&
-                           !lowerCommand.contains("video") && !lowerCommand.contains("stream")
+        let isStopCommand = stopKeywords.contains {
+            normalizedStopCommand == $0 || normalizedStopCommand.hasPrefix($0 + " ")
+        } && !normalizedStopCommand.contains("video") && !normalizedStopCommand.contains("stream")
 
         if isStopCommand {
             print("[VoiceAgent] Stop command detected - full stop")
