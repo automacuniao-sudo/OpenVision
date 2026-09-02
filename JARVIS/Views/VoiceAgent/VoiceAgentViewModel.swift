@@ -1066,6 +1066,17 @@ final class VoiceAgentViewModel: ObservableObject {
                 )
             }
             self.userTranscript += text
+
+            // In raw-PCM Gemini mode the audio has already reached the server before its input
+            // transcription returns, so it cannot be "unsent" without giving up full-duplex.
+            // Still enforce local stop semantics at the earliest observable boundary: silence
+            // playback/turn immediately and suppress any late PCM from that response.
+            if VoiceStopMatching.isBareStopCommand(self.userTranscript) {
+                DiagnosticLogger.shared.log("Voice", "Direct Gemini stop detected from input transcription")
+                self.performFullStop()
+                return
+            }
+
             self.agentState = .listening
             self.armDirectGeminiResponseWatchdog()
         }
@@ -1082,6 +1093,8 @@ final class VoiceAgentViewModel: ObservableObject {
 
         GeminiLiveService.shared.onInterrupted = { [weak self] in
             guard let self, self.isDirectGeminiVoiceMode else { return }
+            MetricsCollector.shared.markInterrupted()
+            MetricsCollector.shared.markSpokeDone()
             // The user's barge-in starts a new semantic turn immediately. Keep the same socket/mic;
             // only reset transcript bookkeeping so the next utterance does not concatenate onto the
             // previous turn.
