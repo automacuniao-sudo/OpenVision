@@ -615,12 +615,8 @@ final class VoiceCommandService: ObservableObject {
         }
 
         guard interruptPrefixAtStart(text) != nil else { return false }
-        let command = extractCommandAfterInterruptPrefix(text).lowercased()
-        let stopWords = [
-            "stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel",
-            "pare", "parar", "silêncio", "silencio", "cala a boca", "fica quieto", "chega", "cancela", "cancelar"
-        ]
-        let matched = stopWords.contains { command == $0 || command.hasPrefix($0 + " ") }
+        let command = extractCommandAfterInterruptPrefix(text)
+        let matched = VoiceStopMatching.isBareStopCommand(command)
         if matched {
             DiagnosticLogger.shared.log("Voice", "Barge-in stop detected (Jarvis-before-stop)")
         }
