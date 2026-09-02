@@ -75,6 +75,17 @@ final class VoiceAgentViewModel: ObservableObject {
     /// Frame counter for logging
     private var videoFrameCount: Int = 0
 
+    var voiceStatusText: String {
+        if errorMessage != nil && !isVoiceReady { return "Microfone: indisponível" }
+        if isDirectGeminiVoiceMode { return "Microfone: Gemini Live direto" }
+        if settingsManager.settings.voiceOwnerLockEnabled && isSessionActive {
+            return voiceCommandService.isListening ? "Microfone: ouvindo + validação de voz" : "Microfone: validação de voz ativa"
+        }
+        if voiceCommandService.isListening { return "Microfone: ouvindo" }
+        if isVoiceReady { return "Microfone: pronto" }
+        return "Microfone: inicializando"
+    }
+
     // MARK: - Agent State
 
     enum AgentState: Equatable {
