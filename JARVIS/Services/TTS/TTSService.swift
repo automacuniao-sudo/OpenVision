@@ -133,6 +133,8 @@ final class TTSService: NSObject, ObservableObject {
 extension TTSService: AVSpeechSynthesizerDelegate {
     nonisolated func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         Task { @MainActor in
+            MetricsCollector.shared.markFirstAudio()
+            DiagnosticLogger.shared.log("Latency", "Apple TTS first audible frame")
             if !self.isSpeaking {
                 self.isSpeaking = true
                 self.onSpeechStarted?()
