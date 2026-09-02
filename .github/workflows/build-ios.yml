@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Baixar codigo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Mostrar ambiente
         run: |
@@ -47,10 +47,38 @@ jobs:
         run: |
           xcodegen generate
 
-      - name: Compilar app e testes
+      - name: Executar testes portateis no simulador
+        run: |
+          set -euo pipefail
+          simulator_id="$(xcrun simctl list devices available -j | python3 -c '
+          import json
+          import sys
+
+          devices = json.load(sys.stdin)["devices"]
+          candidates = [
+              (runtime, device["name"], device["udid"])
+              for runtime, runtime_devices in devices.items()
+              if runtime.startswith("com.apple.CoreSimulator.SimRuntime.iOS")
+              for device in runtime_devices
+              if device.get("isAvailable")
+          ]
+          if not candidates:
+              raise SystemExit("No available iOS Simulator found")
+          print(sorted(candidates)[0][2])
+          ' )"
+          xcodebuild \
+            -project JARVIS.xcodeproj \
+            -scheme JARVISPureTests \
+            -configuration Debug \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            test
+
+      - name: Compilar app e bundle completo de testes para dispositivo (sem executar)
+        # O bundle completo ainda depende de MLX/Metal e do SDK da camera dos oculos.
         # build-for-testing ja compila o app e o target de testes. Mantemos tudo no mesmo
         # DerivedData e reutilizamos o JARVIS.app resultante para criar a IPA. Isso evita
-        # uma segunda compilacao completa das dependencias pesadas (MLX, xgrammar, FluidAudio).
+        # uma segunda compilacao completa das dependencias pesadas (MLX, xgrammar, FluidAudio),
+        # sem executar no simulador o bundle que depende de hardware.
         run: |
           xcodebuild \
             -project JARVIS.xcodeproj \
@@ -82,7 +110,7 @@ jobs:
 
       - name: Salvar IPA
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: JARVIS-iOS-unsigned
           path: build/ipa/JARVIS-unsigned.ipa
