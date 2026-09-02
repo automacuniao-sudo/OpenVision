@@ -400,6 +400,7 @@ final class GeminiLiveService: ObservableObject {
     /// Notify that user stopped speaking
     func userStoppedSpeaking() {
         lastUserSpeechEnd = Date()
+        MetricsCollector.shared.markSpeechEnd()
     }
 
     /// Send text message to Gemini 3.1 Live.
@@ -655,10 +656,17 @@ final class GeminiLiveService: ObservableObject {
                     }
 
                     let pcmNow = Date()
-                    if !firstPCMSeenForTurn, let sentAt = currentTurnSentAt {
+                    if !firstPCMSeenForTurn {
                         firstPCMSeenForTurn = true
-                        let firstMs = Int(pcmNow.timeIntervalSince(sentAt) * 1000)
-                        DiagnosticLogger.shared.log("Latency", "Gemini send→firstPCM=\(firstMs)ms")
+                        MetricsCollector.shared.markFirstToken()
+                        // Gemini produces audio natively; there is no separate synthesizer. Treat
+                        // first PCM arrival as the hand-off to playback so perceived latency still
+                        // measures through to the first audible buffer.
+                        MetricsCollector.shared.markTTSRequested()
+                        if let sentAt = currentTurnSentAt {
+                            let firstMs = Int(pcmNow.timeIntervalSince(sentAt) * 1000)
+                            DiagnosticLogger.shared.log("Latency", "Gemini send→firstPCM=\(firstMs)ms")
+                        }
                     }
                     if let previousPCM = lastPCMReceivedAt {
                         let gapMs = pcmNow.timeIntervalSince(previousPCM) * 1000
@@ -719,6 +727,7 @@ final class GeminiLiveService: ObservableObject {
 
         // Turn complete comes LAST so we never discard sibling audio/transcription fields.
         if content["turnComplete"] as? Bool == true {
+            MetricsCollector.shared.markGenerationDone()
             // A locally interrupted response may still report its final boundary. Consume that
             // boundary without reopening conversation mode in the middle of the user's barge-in.
             if ignoreNextTurnComplete {
@@ -756,6 +765,10 @@ final class GeminiLiveService: ObservableObject {
         lastPCMReceivedAt = nil
         maxPCMGapMs = 0
 
+        if onAudioReceived == nil {
+            // Normal voice mode defers finishTurn until its local PCM queue is actually drained.
+            MetricsCollector.shared.markSpokeDone()
+        }
         DiagnosticLogger.shared.log("Gemini", "Turn complete")
         onTurnComplete?()
 
