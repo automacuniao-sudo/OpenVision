@@ -6,7 +6,7 @@ import Foundation
 struct FaceRecognitionTool: NativeTool {
     let name = "face_recognition"
     let description = """
-    Recognize or remember a real person physically in view using JARVIS's private on-device face memory.     Use action 'identify' when the user asks who the person currently in front of the camera is;     'remember' when they explicitly ask to save that person's face under a provided name;     'forget' to delete a saved person; and 'list' to list known people.     Never use this to identify celebrities/public figures from general knowledge or the web.     The image is processed on-device and is not sent to the model. Camera source defaults to Ray-Ban glasses when connected, otherwise the iPhone rear camera.
+    Recognize or remember a real person physically in view using JARVIS's private on-device face memory.     Use action 'identify' when the user asks who the person currently in front of the camera is;     'remember' when they explicitly ask to save that person's face under a provided name;     'forget' to delete a saved person; and 'list' to list known people.     Never use this to identify celebrities/public figures from general knowledge or the web.     The image is processed on-device and is not sent to the model. Camera source defaults to Ray-Ban glasses when connected, otherwise the iPhone rear camera. If the user asks to recognize themselves / "olhe para mim" / "me reconheça", or explicitly asks for câmera frontal/front camera/selfie camera, use phone_front. If they explicitly ask for câmera traseira/rear/back camera, use phone_back.
     """
 
     let parametersSchema: [String: Any] = [
@@ -23,8 +23,8 @@ struct FaceRecognitionTool: NativeTool {
             ],
             "camera_source": [
                 "type": "string",
-                "enum": ["auto", "glasses", "phone"],
-                "description": "Optional. Use phone only when the user explicitly asks for the iPhone/cellphone camera; otherwise auto."
+                "enum": ["auto", "glasses", "phone", "phone_front", "phone_back"],
+                "description": "Optional. phone keeps legacy rear-camera behavior. Use phone_front for câmera frontal/front/selfie or when the wearer asks to recognize themselves; phone_back for câmera traseira/rear/back; otherwise auto."
             ]
         ],
         "required": ["action"]
@@ -36,6 +36,10 @@ struct FaceRecognitionTool: NativeTool {
 
         let source: VisionCaptureService.CaptureSource
         switch (args["camera_source"] as? String ?? "auto").lowercased() {
+        case "phone_front", "front", "frontal", "selfie", "front_camera":
+            source = .phoneFront
+        case "phone_back", "back", "rear", "traseira", "rear_camera", "back_camera":
+            source = .phoneBack
         case "phone", "iphone", "cellphone":
             source = .phone
         case "glasses", "rayban", "ray-ban":
