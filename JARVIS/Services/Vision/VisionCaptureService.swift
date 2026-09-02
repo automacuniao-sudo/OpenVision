@@ -10,7 +10,10 @@ final class VisionCaptureService {
     enum CaptureSource: String {
         case automatic = "auto"
         case glasses
+        /// Backward-compatible generic iPhone source. This continues to mean the rear camera.
         case phone
+        case phoneFront = "phone_front"
+        case phoneBack = "phone_back"
     }
 
     struct CapturedImage {
@@ -47,9 +50,19 @@ final class VisionCaptureService {
             return CapturedImage(image: image, source: .glasses)
 
         case .phone:
-            let image = try await PhoneCameraService.shared.capturePhoto()
-            DiagnosticLogger.shared.log("Vision", "Captured image source=phone")
+            let image = try await PhoneCameraService.shared.capturePhoto(position: .back)
+            DiagnosticLogger.shared.log("Vision", "Captured image source=phone_back")
             return CapturedImage(image: image, source: .phone)
+
+        case .phoneFront:
+            let image = try await PhoneCameraService.shared.capturePhoto(position: .front)
+            DiagnosticLogger.shared.log("Vision", "Captured image source=phone_front")
+            return CapturedImage(image: image, source: .phoneFront)
+
+        case .phoneBack:
+            let image = try await PhoneCameraService.shared.capturePhoto(position: .back)
+            DiagnosticLogger.shared.log("Vision", "Captured image source=phone_back")
+            return CapturedImage(image: image, source: .phoneBack)
 
         case .automatic:
             if GlassesManager.shared.isRegistered,
@@ -60,8 +73,8 @@ final class VisionCaptureService {
             }
 
             DiagnosticLogger.shared.log("Vision", "Glasses unavailable; falling back to iPhone camera")
-            let image = try await PhoneCameraService.shared.capturePhoto()
-            DiagnosticLogger.shared.log("Vision", "Captured image source=phone")
+            let image = try await PhoneCameraService.shared.capturePhoto(position: .back)
+            DiagnosticLogger.shared.log("Vision", "Captured image source=phone_back")
             return CapturedImage(image: image, source: .phone)
         }
     }
