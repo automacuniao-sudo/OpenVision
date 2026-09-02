@@ -117,6 +117,9 @@ final class VoiceAgentViewModel: ObservableObject {
         setupVoiceCommandService()
         setupGlassesCallbacks()
         preloadLocalModelIfNeeded()
+        if settingsManager.settings.voiceOwnerLockEnabled {
+            Task { await SpeakerVerificationService.shared.warmUp() }
+        }
         // Resume wake-word listening when returning to this screen. onDisappear stops it
         // (e.g. when navigating to Settings), and the one-time .task doesn't re-run on return —
         // so without this, the wake word stayed dead until you tapped the mic button.
