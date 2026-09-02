@@ -809,7 +809,8 @@ final class GemmaLocalService: ObservableObject {
         }
 
         var full = ""
-        var tokenCount = 0
+        var chunkCount = 0
+        var completion: GenerateCompletionInfo?
         // Drive the iterator manually so we can bail BEFORE requesting the next token (i.e.
         // before MLX submits the next Metal command buffer) when the app is backgrounded.
         var iterator = stream.makeAsyncIterator()
@@ -820,15 +821,30 @@ final class GemmaLocalService: ObservableObject {
                 break
             }
             guard let item = await iterator.next() else { break }
-            if case .chunk(let piece) = item {
+            switch item {
+            case .chunk(let piece):
                 full += piece
-                tokenCount += 1
-                if tokenCount == 1 { NSLog("[OV] GemmaLocal: first token received") }
+                chunkCount += 1
+                if chunkCount == 1 {
+                    NSLog("[OV] GemmaLocal: first token received")
+                    await MainActor.run { MetricsCollector.shared.markFirstToken() }
+                }
                 let snapshot = full
                 await MainActor.run { self.onPartialResponse?(snapshot) }
+            case .info(let info):
+                completion = info
+            default:
+                break
             }
         }
-        NSLog("[OV] GemmaLocal: generation done — %d chunks, %d chars", tokenCount, full.count)
+        NSLog("[OV] GemmaLocal: generation done — %d chunks, %d chars", chunkCount, full.count)
+        let stats = completion
+        await MainActor.run {
+            MetricsCollector.shared.markGenerationDone(
+                tokenCount: stats?.generationTokenCount,
+                duration: stats?.generateTime
+            )
+        }
 
         // Release the MLX buffer cache so vision memory doesn't pile up toward the jetsam limit.
         Memory.clearCache()
@@ -955,16 +971,34 @@ final class GemmaLocalService: ObservableObject {
             return try MLXLMCommon.generate(input: lmInput, parameters: params, context: context)
         }
         var full = ""
+        var chunkCount = 0
+        var completion: GenerateCompletionInfo?
         for await item in stream {
-            if case .chunk(let piece) = item {
+            switch item {
+            case .chunk(let piece):
                 full += piece
+                chunkCount += 1
+                if chunkCount == 1 {
+                    await MainActor.run { MetricsCollector.shared.markFirstToken() }
+                }
                 if let onPartial {
                     let snapshot = full
                     await MainActor.run { onPartial(snapshot) }
                 }
+            case .info(let info):
+                completion = info
+            default:
+                break
             }
         }
         Memory.clearCache()
+        let stats = completion
+        await MainActor.run {
+            MetricsCollector.shared.markGenerationDone(
+                tokenCount: stats?.generationTokenCount,
+                duration: stats?.generateTime
+            )
+        }
         return full
     }
 
