@@ -1236,14 +1236,19 @@ final class VoiceAgentViewModel: ObservableObject {
         lastProcessedCommand = command
         lastProcessedAt = now
 
-        // Face recognition on CLOUD backends: classify via the on-device model (if loaded) up front.
-        // On the Local backend we DON'T do this — routing is merged into the single generation below
-        // so we never run two Gemma generations per command (memory/jetsam).
-        if settingsManager.settings.aiBackend != .localGemma {
-            if await handleFaceCommandIfNeeded(command) {
-                agentState = isSessionActive ? .listening : .idle
-                return
-            }
+        // Explicit face commands are deterministic and should never need an LLM. This also fixes
+        // local-backend phrases such as "realize reconhecimento facial pela câmera frontal" without
+        // paying a second Gemma generation. Only ambiguous cloud-backend requests fall through to
+        // the optional local intent classifier.
+        if let directFaceIntent = deterministicFaceIntent(command) {
+            await handleFaceIntent(directFaceIntent)
+            agentState = isSessionActive ? .listening : .idle
+            return
+        }
+        if settingsManager.settings.aiBackend != .localGemma,
+           await handleFaceCommandIfNeeded(command) {
+            agentState = isSessionActive ? .listening : .idle
+            return
         }
 
         agentState = .thinking
@@ -1764,7 +1769,7 @@ final class VoiceAgentViewModel: ObservableObject {
         ]
         let selfFaceCues = [
             "olhe para mim", "olha para mim", "me reconheca", "reconheca meu rosto",
-            "reconheca a minha face", "veja meu rosto", "veja minha face",
+            "reconheca a minha face", "veja meu rosto", "veja minha face", "me veja", "para me ver",
             "look at me", "recognize me", "recognise me", "my face"
         ]
         let explicitFront = frontCameraCues.contains(where: normalized.contains)
@@ -1838,8 +1843,7 @@ final class VoiceAgentViewModel: ObservableObject {
         if faceRecognitionCommands.contains(where: normalized.contains) {
             // A generic "activate face recognition" on the phone is treated as a selfie/owner
             // check. Explicit glasses/rear commands still override this below/above.
-            let source = explicitRear ? VisionCaptureService.CaptureSource.phoneBack
-                : (explicitFront ? .phoneFront : .phoneFront)
+            let source: VisionCaptureService.CaptureSource = explicitRear ? .phoneBack : .phoneFront
             return .init(action: "identify", name: "", cameraSource: source)
         }
 
