@@ -349,12 +349,18 @@ final class VoiceAgentViewModel: ObservableObject {
                         }
                         voiceCommandService.enterConversationMode()
                     } else {
-                        errorMessage = "Speech recognition not authorized"
+                        reportVoiceError(
+                            "Speech recognition not authorized",
+                            spoken: "O reconhecimento de voz não está autorizado."
+                        )
                     }
                 }
 
             } catch {
-                errorMessage = "Failed to connect: \(error.localizedDescription)"
+                reportVoiceError(
+                    "Failed to connect: \(error.localizedDescription)",
+                    spoken: "Não consegui conectar ao serviço de inteligência agora. Verifique a conexão e tente novamente."
+                )
                 isSessionActive = false
                 agentState = .idle
             }
@@ -739,7 +745,11 @@ final class VoiceAgentViewModel: ObservableObject {
             startWakeWordListening()
         } else {
             print("[VoiceAgent] Speech recognition not authorized")
-            errorMessage = "Speech recognition not authorized. Please enable in Settings."
+            isVoiceReady = false
+            reportVoiceError(
+                "Speech recognition not authorized. Please enable in Settings.",
+                spoken: "Não consegui acessar o reconhecimento de voz. Verifique a permissão do microfone e da fala nos Ajustes."
+            )
         }
     }
 
@@ -1124,7 +1134,11 @@ final class VoiceAgentViewModel: ObservableObject {
             print("[VoiceAgent] Started wake word listening - READY")
         } catch {
             print("[VoiceAgent] Failed to start listening: \(error)")
-            errorMessage = error.localizedDescription
+            isVoiceReady = false
+            reportVoiceError(
+                error.localizedDescription,
+                spoken: "Não consegui iniciar o microfone. Verifique o áudio e tente novamente."
+            )
         }
     }
 
@@ -2086,6 +2100,16 @@ final class VoiceAgentViewModel: ObservableObject {
         }
 
         print("[VoiceAgent] Glasses callbacks configured")
+    }
+
+    private func reportVoiceError(_ message: String, spoken: String) {
+        errorMessage = message
+        DiagnosticLogger.shared.log("Voice", "ERROR: \(message)")
+        // Use the system voice for error reporting because it is always available, even when the
+        // selected neural/cloud TTS failed or was never initialized.
+        if !ttsService.isSpeaking {
+            ttsService.speak(spoken)
+        }
     }
 
     // MARK: - TTS Integration
