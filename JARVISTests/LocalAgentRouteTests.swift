@@ -16,6 +16,26 @@ final class LocalAgentRouteTests: XCTestCase {
         XCTAssertEqual(intent.name, "Sara")
     }
 
+    func testFaceIdentifyFrontCamera() async {
+        let result = await route(#"{"face":"identify","name":"","camera_source":"phone_front"}"#)
+        guard case .face(let intent) = result else { return XCTFail("expected .face, got \(result)") }
+        XCTAssertEqual(intent.action, "identify")
+        XCTAssertEqual(intent.cameraSource.rawValue, "phone_front")
+    }
+
+    func testFaceIdentifyRearCamera() async {
+        let result = await route(#"{"face":"identify","name":"","camera_source":"phone_back"}"#)
+        guard case .face(let intent) = result else { return XCTFail("expected .face, got \(result)") }
+        XCTAssertEqual(intent.action, "identify")
+        XCTAssertEqual(intent.cameraSource.rawValue, "phone_back")
+    }
+
+    func testFaceCameraDefaultsToAutomatic() async {
+        let result = await route(#"{"face":"identify","name":""}"#)
+        guard case .face(let intent) = result else { return XCTFail("expected .face, got \(result)") }
+        XCTAssertEqual(intent.cameraSource.rawValue, "auto")
+    }
+
     func testFaceIdentifyWithEmptyName() async {
         let result = await route(#"{"face":"identify","name":""}"#)
         guard case .face(let intent) = result else { return XCTFail("expected .face, got \(result)") }
