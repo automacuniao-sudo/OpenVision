@@ -95,9 +95,6 @@ final class MetricsCollector: ObservableObject {
     func beginTurn() {
         if currentTurn != nil { abandonTurn() }
         currentTurn = TurnTimeline(startedAt: Date())
-        // One cheap device sample per turn even when the optional periodic/push telemetry is off.
-        // This makes thermal/memory regressions visible from Diagnostics during local LLM + Kokoro tests.
-        sampleNow()
     }
 
     /// VAD (or the fallback timer) decided the user stopped speaking.
