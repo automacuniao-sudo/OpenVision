@@ -128,7 +128,9 @@ final class VoiceAgentViewModel: ObservableObject {
         setupVoiceCommandService()
         setupGlassesCallbacks()
         preloadLocalModelIfNeeded()
-        if settingsManager.settings.voiceOwnerLockEnabled {
+        if SpeakerVerificationService.shared.hasOwnerProfile {
+            // Preload asynchronously whenever an owner profile exists so both manual "verify my
+            // voice" and Owner Voice Lock avoid the first-use CAM++ load penalty.
             Task { await SpeakerVerificationService.shared.warmUp() }
         }
         // Resume wake-word listening when returning to this screen. onDisappear stops it
