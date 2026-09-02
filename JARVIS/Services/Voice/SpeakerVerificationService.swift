@@ -162,7 +162,12 @@ final class SpeakerVerificationService: @unchecked Sendable {
     }
 
     func verifyRecentVoice(threshold: Float) async -> VerificationResult {
-        await verify(samples: snapshotRecentAudio(maxSeconds: 6.0), threshold: threshold)
+        let started = Date()
+        let samples = snapshotRecentAudio(maxSeconds: 4.0)
+        let result = await verify(samples: samples, threshold: threshold)
+        let ms = Int(Date().timeIntervalSince(started) * 1000)
+        log(String(format: "Manual verify duration=%dms audio=%.2fs", ms, Double(samples.count) / 16_000.0))
+        return result
     }
 
     func verify(samples raw: [Float], threshold: Float) async -> VerificationResult {
