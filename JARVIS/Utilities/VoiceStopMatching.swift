@@ -5,8 +5,8 @@ import Foundation
 
 enum VoiceStopMatching {
     private static let stopPhrases = [
-        "stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel",
-        "pare", "para", "parar", "silencio", "cala a boca", "fica quieto",
+        "stop", "ok stop", "okay stop", "be quiet", "shut up", "silence", "quiet", "enough", "cancel",
+        "pare", "parar", "silencio", "cala a boca", "fica quieto",
         "chega", "cancela", "cancelar", "cancele a resposta"
     ]
 
