@@ -148,6 +148,7 @@ final class VoiceCommandService: ObservableObject {
         guard state == .listening || state == .conversationMode else { return }
         guard hasSpokenThisTurn, !currentTranscription.isEmpty else { return }
 
+        MetricsCollector.shared.markSpeechEnd()
         vadCommitPending = true
         DiagnosticLogger.shared.log(
             "VAD",
@@ -415,6 +416,7 @@ final class VoiceCommandService: ObservableObject {
         }
 
         print("[VoiceCommand] Restarted recognition (cleared buffer)")
+        MetricsCollector.shared.count("recognition_restart")
     }
 
     func exitConversationMode() {
@@ -753,6 +755,7 @@ final class VoiceCommandService: ObservableObject {
     private func handleWakeWordDetected() {
         print("[VoiceCommand] JARVIS wake word detected!")
         DiagnosticLogger.shared.log("Voice", "Wake word detected: \(wakeWord)")
+        MetricsCollector.shared.count("wake_word_detected")
 
         wakeWordCooldownActive = true
         DispatchQueue.main.asyncAfter(deadline: .now() + Constants.Voice.wakeWordCooldown) { [weak self] in
@@ -787,6 +790,7 @@ final class VoiceCommandService: ObservableObject {
 
         print("[VoiceCommand] Command captured: \(command)")
         DiagnosticLogger.shared.log("Voice", "Command captured: \(command)")
+        MetricsCollector.shared.count("command_captured")
 
         state = .processing
         vadCommitPending = false
@@ -798,8 +802,11 @@ final class VoiceCommandService: ObservableObject {
 
         let settings = SettingsManager.shared.settings
         let mustVerifyOwner = settings.voiceOwnerLockEnabled
+        // CAM++ does not need the whole rolling buffer. Bounding verification to the most recent
+        // 4 seconds cuts embedding work on long commands while preserving enough speech for a
+        // stable speaker match. The buffer is reset at speech start, so this remains turn-local.
         let sample = mustVerifyOwner
-            ? SpeakerVerificationService.shared.snapshotRecentAudio(maxSeconds: 6.0)
+            ? SpeakerVerificationService.shared.snapshotRecentAudio(maxSeconds: 4.0)
             : []
         let threshold = Float(settings.voiceOwnerSimilarityThreshold)
 
@@ -812,7 +819,13 @@ final class VoiceCommandService: ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
+            let verifyStartedAt = Date()
             let result = await SpeakerVerificationService.shared.verify(samples: sample, threshold: threshold)
+            let verifyMs = Int(Date().timeIntervalSince(verifyStartedAt) * 1000)
+            DiagnosticLogger.shared.log(
+                "Latency",
+                "Speaker verification=\(verifyMs)ms audio=\(String(format: "%.2f", Double(sample.count) / 16000.0))s"
+            )
             if result.isMatch {
                 DiagnosticLogger.shared.log(
                     "VoiceAuth",
@@ -859,6 +872,9 @@ final class VoiceCommandService: ObservableObject {
 
     private func handleSilenceTimeout() {
         guard state == .listening || state == .conversationMode else { return }
+
+        // Fallback path when VAD did not fire; first-wins keeps the real VAD timestamp when it did.
+        MetricsCollector.shared.markSpeechEnd()
 
         if !currentTranscription.isEmpty {
             handleCommandComplete(currentTranscription)
