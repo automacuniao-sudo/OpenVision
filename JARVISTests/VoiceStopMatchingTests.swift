@@ -1,4 +1,7 @@
 import XCTest
+#if !JARVIS_PURE_TESTS
+@testable import JARVIS
+#endif
 
 final class VoiceStopMatchingTests: XCTestCase {
     func testBareStops() {
