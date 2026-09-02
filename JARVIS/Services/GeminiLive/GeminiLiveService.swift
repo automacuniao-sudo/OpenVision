@@ -309,7 +309,7 @@ final class GeminiLiveService: ObservableObject {
 
         You can see what the user sees when a glasses/camera stream is actually available. Never pretend you can currently see something if no image or video frame was provided.
 
-        Keep responses concise, natural, and conversational. The user is using JARVIS hands-free and expects quick answers.
+        Default to 1–3 short spoken sentences, natural and conversational. Expand only when the user explicitly asks for detail. The user is using JARVIS hands-free and expects quick answers.
 
         RESPOND IN BRAZILIAN PORTUGUESE (pt-BR). YOU MUST RESPOND UNMISTAKABLY IN BRAZILIAN PORTUGUESE unless the user explicitly asks for another language.
 
