@@ -12,6 +12,17 @@ enum LocalAgent {
     struct FaceIntent {
         let action: String   // "remember" | "identify" | "forget" | "list"
         let name: String     // person's name (may be empty for identify/list)
+        let cameraSource: VisionCaptureService.CaptureSource
+
+        init(
+            action: String,
+            name: String,
+            cameraSource: VisionCaptureService.CaptureSource = .automatic
+        ) {
+            self.action = action
+            self.name = name
+            self.cameraSource = cameraSource
+        }
     }
 
     enum RouteResult {
@@ -36,16 +47,21 @@ enum LocalAgent {
         Face actions apply ONLY to a real person PHYSICALLY IN FRONT of the user right now (seen through the glasses camera). If the user names a person, or asks about a public/famous/historical figure, or asks a general "who is…" question, that is NOT a face action — answer it or search instead.
 
         If (and only if) the user wants a face action, reply with ONLY one JSON object and nothing else:
-        - Identify the person currently in view: {"face":"identify","name":""}
-        - Save/remember the person in view under a name: {"face":"remember","name":"THE_NAME"}
+        - Identify the person currently in view: {"face":"identify","name":"","camera_source":"auto"}
+        - Save/remember the person in view under a name: {"face":"remember","name":"THE_NAME","camera_source":"auto"}
+        - If the wearer asks to recognize themselves, says "olhe para mim"/"me reconheça", or explicitly asks for the front/selfie camera, use "camera_source":"phone_front".
+        - If they explicitly ask for the rear/back camera, use "camera_source":"phone_back".
         - Forget a saved person: {"face":"forget","name":"THE_NAME"}
         - List the people you know: {"face":"list","name":""}
 
         Examples (face actions — someone is in front of the user):
-        User: who is this → {"face":"identify","name":""}
-        User: who is this person → {"face":"identify","name":""}
-        User: who am I looking at → {"face":"identify","name":""}
-        User: do you know this person in front of me → {"face":"identify","name":""}
+        User: who is this → {"face":"identify","name":"","camera_source":"auto"}
+        User: who is this person → {"face":"identify","name":"","camera_source":"auto"}
+        User: who am I looking at → {"face":"identify","name":"","camera_source":"auto"}
+        User: do you know this person in front of me → {"face":"identify","name":"","camera_source":"auto"}
+        User: olhe para mim pela câmera frontal → {"face":"identify","name":"","camera_source":"phone_front"}
+        User: reconheça meu rosto → {"face":"identify","name":"","camera_source":"phone_front"}
+        User: identify this person using the rear camera → {"face":"identify","name":"","camera_source":"phone_back"}
         User: remember this is Sara → {"face":"remember","name":"Sara"}
         User: save his face as Alex → {"face":"remember","name":"Alex"}
         User: forget Sara → {"face":"forget","name":"Sara"}
@@ -144,7 +160,20 @@ enum LocalAgent {
             if let action = (obj["face"] as? String)?.lowercased(),
                ["remember", "identify", "forget", "list"].contains(action) {
                 let name = (obj["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                return .face(FaceIntent(action: action, name: name))
+                let cameraSource: VisionCaptureService.CaptureSource
+                switch (obj["camera_source"] as? String ?? "auto").lowercased() {
+                case "phone_front", "front", "frontal", "selfie":
+                    cameraSource = .phoneFront
+                case "phone_back", "rear", "back", "traseira":
+                    cameraSource = .phoneBack
+                case "phone", "iphone":
+                    cameraSource = .phone
+                case "glasses", "rayban", "ray-ban":
+                    cameraSource = .glasses
+                default:
+                    cameraSource = .automatic
+                }
+                return .face(FaceIntent(action: action, name: name, cameraSource: cameraSource))
             }
             if (obj["tool"] as? String)?.lowercased() == "web_search",
                let query = (obj["query"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),

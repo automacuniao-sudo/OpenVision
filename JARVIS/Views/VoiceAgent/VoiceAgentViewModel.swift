@@ -1236,14 +1236,19 @@ final class VoiceAgentViewModel: ObservableObject {
         lastProcessedCommand = command
         lastProcessedAt = now
 
-        // Face recognition on CLOUD backends: classify via the on-device model (if loaded) up front.
-        // On the Local backend we DON'T do this — routing is merged into the single generation below
-        // so we never run two Gemma generations per command (memory/jetsam).
-        if settingsManager.settings.aiBackend != .localGemma {
-            if await handleFaceCommandIfNeeded(command) {
-                agentState = isSessionActive ? .listening : .idle
-                return
-            }
+        // Explicit face commands are deterministic and should never need an LLM. This also fixes
+        // local-backend phrases such as "realize reconhecimento facial pela câmera frontal" without
+        // paying a second Gemma generation. Only ambiguous cloud-backend requests fall through to
+        // the optional local intent classifier.
+        if let directFaceIntent = deterministicFaceIntent(command) {
+            await handleFaceIntent(directFaceIntent)
+            agentState = isSessionActive ? .listening : .idle
+            return
+        }
+        if settingsManager.settings.aiBackend != .localGemma,
+           await handleFaceCommandIfNeeded(command) {
+            agentState = isSessionActive ? .listening : .idle
+            return
         }
 
         agentState = .thinking
@@ -1754,6 +1759,30 @@ final class VoiceAgentViewModel: ObservableObject {
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
+        let frontCameraCues = [
+            "camera frontal", "pela frontal", "use a frontal", "frontal do iphone",
+            "front camera", "selfie camera", "selfie"
+        ]
+        let rearCameraCues = [
+            "camera traseira", "pela traseira", "use a traseira", "traseira do iphone",
+            "rear camera", "back camera"
+        ]
+        let selfFaceCues = [
+            "olhe para mim", "olha para mim", "me reconheca", "reconheca meu rosto",
+            "reconheca a minha face", "veja meu rosto", "veja minha face", "me veja", "para me ver",
+            "look at me", "recognize me", "recognise me", "my face"
+        ]
+        let explicitFront = frontCameraCues.contains(where: normalized.contains)
+        let explicitRear = rearCameraCues.contains(where: normalized.contains)
+        let selfDirected = selfFaceCues.contains(where: normalized.contains)
+
+        func preferredCamera(defaultForSelf: Bool = false) -> VisionCaptureService.CaptureSource {
+            if explicitFront { return .phoneFront }
+            if explicitRear { return .phoneBack }
+            if selfDirected || defaultForSelf { return .phoneFront }
+            return .automatic
+        }
+
         func suffix(after markers: [String]) -> String? {
             for marker in markers {
                 if let range = command.range(
@@ -1789,7 +1818,7 @@ final class VoiceAgentViewModel: ObservableObject {
         let rememberCues = ["lembre", "memorize", "cadastre", "remember", "save this"]
         if hasVisualCue && rememberCues.contains(where: normalized.contains) {
             let name = suffix(after: [" como ", " as "]) ?? ""
-            return .init(action: "remember", name: name)
+            return .init(action: "remember", name: name, cameraSource: preferredCamera())
         }
 
         let identifyCues = [
@@ -1798,7 +1827,28 @@ final class VoiceAgentViewModel: ObservableObject {
             "who is this person", "who is this face", "recognize this person", "identify this person"
         ]
         if identifyCues.contains(where: normalized.contains) {
-            return .init(action: "identify", name: "")
+            return .init(action: "identify", name: "", cameraSource: preferredCamera())
+        }
+
+        // Direct hands-free commands observed on device. These must bypass the language model:
+        // Build 40 routed "ative o reconhecimento facial" through Gemini, which mixed it with
+        // speaker verification and asked for a name instead of taking a face frame.
+        let faceRecognitionCommands = [
+            "ative o reconhecimento facial", "ative reconhecimento facial",
+            "inicie o reconhecimento facial", "inicie reconhecimento facial",
+            "realize o reconhecimento facial", "realize reconhecimento facial",
+            "faca o reconhecimento facial", "faca reconhecimento facial",
+            "execute o reconhecimento facial", "execute reconhecimento facial"
+        ]
+        if faceRecognitionCommands.contains(where: normalized.contains) {
+            // A generic "activate face recognition" on the phone is treated as a selfie/owner
+            // check. Explicit glasses/rear commands still override this below/above.
+            let source: VisionCaptureService.CaptureSource = explicitRear ? .phoneBack : .phoneFront
+            return .init(action: "identify", name: "", cameraSource: source)
+        }
+
+        if selfDirected {
+            return .init(action: "identify", name: "", cameraSource: preferredCamera(defaultForSelf: true))
         }
 
         return nil
@@ -1878,7 +1928,7 @@ final class VoiceAgentViewModel: ObservableObject {
         switch intent.action {
         case "identify":
             agentState = .thinking
-            guard let image = await currentFaceImage() else {
+            guard let image = await currentFaceImage(preferred: intent.cameraSource) else {
                 speakResponse("Não consegui acessar uma câmera para reconhecer a pessoa.")
                 return
             }
@@ -1890,7 +1940,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 speakResponse("Claro. Qual é o nome dessa pessoa?")
                 return
             }
-            guard let image = await currentFaceImage() else {
+            guard let image = await currentFaceImage(preferred: intent.cameraSource) else {
                 speakResponse("Não consegui acessar uma câmera para cadastrar essa pessoa.")
                 return
             }
@@ -1909,16 +1959,24 @@ final class VoiceAgentViewModel: ObservableObject {
 
     /// Face recognition is camera-source agnostic. Prefer the Ray-Ban POV camera when it is
     /// actually connected; otherwise take a one-shot photo with the iPhone rear camera.
-    private func currentFaceImage() async -> UIImage? {
+    private func currentFaceImage(
+        preferred source: VisionCaptureService.CaptureSource = .automatic
+    ) async -> UIImage? {
         do {
             let capture = try await VisionCaptureService.shared.captureImage(
-                preferred: .automatic,
+                preferred: source,
                 keepGlassesStreaming: isLiveVideoMode
             )
-            DiagnosticLogger.shared.log("Face", "Captured face frame source=\(capture.source.rawValue)")
+            DiagnosticLogger.shared.log(
+                "Face",
+                "Captured face frame requested=\(source.rawValue) actual=\(capture.source.rawValue)"
+            )
             return capture.image
         } catch {
-            DiagnosticLogger.shared.log("Face", "Camera capture failed: \(error.localizedDescription)")
+            DiagnosticLogger.shared.log(
+                "Face",
+                "Camera capture failed requested=\(source.rawValue): \(error.localizedDescription)"
+            )
             errorMessage = "Face camera failed: \(error.localizedDescription)"
             return nil
         }

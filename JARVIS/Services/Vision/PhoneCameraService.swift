@@ -131,9 +131,17 @@ final class PhoneCameraService: NSObject {
             session.removeOutput(output)
         }
 
-        let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
-            ?? AVCaptureDevice.default(for: .video)
+        // Honor an explicit front/back request. Falling back to an arbitrary camera here is
+        // dangerous for face recognition because "use the front camera" could silently capture
+        // the room behind the phone instead of the wearer.
+        let device: AVCaptureDevice?
+        if position == .unspecified {
+            device = AVCaptureDevice.default(for: .video)
+        } else {
+            device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
+        }
         guard let device else { throw CameraError.unavailable }
+        log("Configured camera position=\(device.position == .front ? "front" : "back") device=\(device.localizedName)")
 
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw CameraError.configurationFailed }

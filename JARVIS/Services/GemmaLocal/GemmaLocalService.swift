@@ -876,14 +876,20 @@ final class GemmaLocalService: ObservableObject {
         let user = """
         The user said: "\(command)"
 
-        Decide which action they want (looking at a person through the glasses):
+        Decide which face action they want:
         - "remember": save the face of the person in view under a name they provided
         - "identify": tell them who the person in view is
         - "forget": remove a previously saved person by name
         - "list": list the people already known
-        - "none": the command is NOT about recognizing, remembering, or naming a person
+        - "none": the command is NOT about recognizing, remembering, or naming a real person
 
-        Reply ONLY as JSON: {"action":"remember|identify|forget|list|none","name":"<the person's name if they said one, otherwise empty>"}
+        Choose camera_source:
+        - "phone_front" when the wearer asks to recognize themselves, says "olhe para mim"/"me reconheça", or explicitly asks for front/frontal/selfie camera
+        - "phone_back" when they explicitly ask for rear/back/traseira camera
+        - "glasses" when they explicitly ask for the glasses camera
+        - "auto" otherwise
+
+        Reply ONLY as JSON: {"action":"remember|identify|forget|list|none","name":"<name or empty>","camera_source":"auto|glasses|phone_front|phone_back"}
         """
         let messages: [Chat.Message] = [
             .init(role: .system, content: system),
@@ -903,7 +909,20 @@ final class GemmaLocalService: ObservableObject {
             return nil
         }
         let name = (obj["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return FaceIntent(action: action, name: name)
+        let cameraSource: VisionCaptureService.CaptureSource
+        switch (obj["camera_source"] as? String ?? "auto").lowercased() {
+        case "phone_front", "front", "frontal", "selfie":
+            cameraSource = .phoneFront
+        case "phone_back", "rear", "back", "traseira":
+            cameraSource = .phoneBack
+        case "phone", "iphone":
+            cameraSource = .phone
+        case "glasses", "rayban", "ray-ban":
+            cameraSource = .glasses
+        default:
+            cameraSource = .automatic
+        }
+        return FaceIntent(action: action, name: name, cameraSource: cameraSource)
     }
 
     typealias RouteResult = LocalAgent.RouteResult

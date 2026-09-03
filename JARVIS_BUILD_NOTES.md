@@ -1,3 +1,25 @@
+## Build 41 — front-camera face recognition
+
+- Added explicit iPhone front-camera and rear-camera capture sources for face recognition.
+- Face-recognition tool now accepts auto, glasses, phone, phone_front and phone_back.
+- "Olhe para mim", "me reconheça", "reconheça meu rosto" and explicit câmera frontal/front/selfie requests route to the iPhone front camera.
+- Generic hands-free commands such as "ative/realize/faça reconhecimento facial" now bypass the LLM and run the face recognizer directly instead of being confused with speaker verification.
+- Explicit câmera traseira/rear/back requests still use the rear camera; third-person "reconheça essa pessoa" remains automatic (glasses first, phone rear fallback).
+- PhoneCameraService no longer silently substitutes another lens when a specific front/back position was requested.
+- Face capture diagnostics now record both requested and actual source.
+- Local-agent face JSON carries camera_source and has unit coverage for front/rear/default routing.
+- Existing face embeddings remain compatible; no re-enrollment is required solely because the capture lens changed.
+- App build number is 41; marketing version remains 2.10.0.
+
+### Build 41 device test gates
+
+- Say "Jarvis, olhe para mim" and confirm Diagnostics reports requested=phone_front actual=phone_front.
+- Say "realize reconhecimento facial" with no glasses connected; it should use the front camera and identify the enrolled wearer.
+- Say "reconheça essa pessoa" while pointing the phone rear camera at someone else; automatic/rear behavior must remain intact.
+- Explicit "pela câmera traseira" must report phone_back.
+- Face recognition must not claim voice verification or ask for a name on an identify request.
+- Wake word, Build 40 audio latency, Owner Voice Lock and barge-in must remain unchanged.
+
 ## Build 40 — audio latency, streaming, interruption and observability
 
 - Kokoro now supports real sentence streaming with a single FIFO drainer: beginStreaming, speakChunk, endStreaming.
