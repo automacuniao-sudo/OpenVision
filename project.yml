@@ -48,6 +48,7 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: JARVIS_PURE_TESTS
 
   JARVISTests:
     type: bundle.unit-test
