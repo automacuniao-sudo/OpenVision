@@ -48,7 +48,6 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        SWIFT_ACTIVE_COMPILATION_CONDITIONS: JARVIS_PURE_TESTS
 
   JARVISTests:
     type: bundle.unit-test
@@ -87,6 +86,8 @@ targets:
         products:
           - MWDATCore
           - MWDATCamera
+      - package: SpotifyiOS
+        product: SpotifyiOS
       - package: FluidAudio
         products:
           - FluidAudio
@@ -120,6 +121,9 @@ packages:
     # Pinned exactly because the DAT API changes materially between releases.
     # 0.9.0 uses DeviceSession -> addCamera -> Camera.stream and adds newer-device support.
     exactVersion: "0.9.0"
+  SpotifyiOS:
+    url: https://github.com/spotify/ios-sdk
+    exactVersion: "5.0.1"
   mlx-swift:
     url: https://github.com/PrismML-Eng/mlx-swift.git
     branch: v0.31.6_prism
