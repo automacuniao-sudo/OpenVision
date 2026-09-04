@@ -38,12 +38,11 @@ final class PhoneCameraService: NSObject {
     private let sessionQueue = DispatchQueue(label: "jarvis.phone-camera.session", qos: .userInitiated)
 
     private var activeCaptureID: UUID?
+    private var activeCaptureStartedAt: UInt64?
     private var activeDelegate: PhotoCaptureDelegate?
 
     private override init() {
         super.init()
-        // We only attach video. Explicitly keep AVCaptureSession away from the JARVIS audio session
-        // so Gemini Live / wake-word microphone ownership is not reconfigured by a face photo.
         session.automaticallyConfiguresApplicationAudioSession = false
     }
 
@@ -90,7 +89,8 @@ final class PhoneCameraService: NSObject {
 
                 let settings = AVCapturePhotoSettings()
                 settings.photoQualityPrioritization = .speed
-                self.log("Capturing one-shot photo position=\(position == .front ? "front" : "back")")
+                self.activeCaptureStartedAt = DispatchTime.now().uptimeNanoseconds
+                self.log("Capturing one-shot photo requested=\(Self.positionLabel(position)) quality=speed")
                 self.photoOutput.capturePhoto(with: settings, delegate: delegate)
 
                 self.sessionQueue.asyncAfter(deadline: .now() + 6) { [weak self, weak delegate] in
@@ -131,9 +131,6 @@ final class PhoneCameraService: NSObject {
             session.removeOutput(output)
         }
 
-        // Honor an explicit front/back request. Falling back to an arbitrary camera here is
-        // dangerous for face recognition because "use the front camera" could silently capture
-        // the room behind the phone instead of the wearer.
         let device: AVCaptureDevice?
         if position == .unspecified {
             device = AVCaptureDevice.default(for: .video)
@@ -141,7 +138,7 @@ final class PhoneCameraService: NSObject {
             device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
         }
         guard let device else { throw CameraError.unavailable }
-        log("Configured camera position=\(device.position == .front ? "front" : "back") device=\(device.localizedName)")
+        log("Configured requested=\(Self.positionLabel(position)) actual=\(Self.positionLabel(device.position)) device=\(device.localizedName)")
 
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else { throw CameraError.configurationFailed }
@@ -163,16 +160,45 @@ final class PhoneCameraService: NSObject {
             if self.session.isRunning {
                 self.session.stopRunning()
             }
+            let startedAt = self.activeCaptureStartedAt
             self.activeCaptureID = nil
+            self.activeCaptureStartedAt = nil
             self.activeDelegate = nil
 
+            let latency = startedAt.map { Int((DispatchTime.now().uptimeNanoseconds - $0) / 1_000_000) }
             switch result {
             case .success(let image):
-                self.log("Photo captured size=\(Int(image.size.width))x\(Int(image.size.height))")
+                let raw = image.cgImage.map { "\($0.width)x\($0.height)" } ?? "nil"
+                self.log(
+                    "Photo captured uiSize=\(Int(image.size.width))x\(Int(image.size.height)) rawPixels=\(raw) uiOrientation=\(Self.imageOrientationLabel(image.imageOrientation)) latencyMs=\(latency ?? -1)"
+                )
             case .failure(let error):
-                self.log("Capture failed: \(error.localizedDescription)")
+                self.log("Capture failed latencyMs=\(latency ?? -1) error=\(error.localizedDescription)")
             }
             continuation.resume(with: result)
+        }
+    }
+
+    private static func positionLabel(_ position: AVCaptureDevice.Position) -> String {
+        switch position {
+        case .front: return "front"
+        case .back: return "back"
+        case .unspecified: return "unspecified"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func imageOrientationLabel(_ orientation: UIImage.Orientation) -> String {
+        switch orientation {
+        case .up: return "up"
+        case .upMirrored: return "upMirrored"
+        case .down: return "down"
+        case .downMirrored: return "downMirrored"
+        case .left: return "left"
+        case .leftMirrored: return "leftMirrored"
+        case .right: return "right"
+        case .rightMirrored: return "rightMirrored"
+        @unknown default: return "unknown"
         }
     }
 
