@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - jarvis-dev
-      - feature/build42-face-diagnostics
   pull_request:
     branches:
       - jarvis-dev
