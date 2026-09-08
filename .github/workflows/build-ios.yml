@@ -127,14 +127,16 @@ jobs:
             DEVELOPMENT_TEAM="" \
             build-for-testing
 
+      # Temporary PR packaging gate for Brain Core physical-iPhone validation.
+      # Remove this branch-specific exception before merging the feature.
       - name: Verificar produto compilado
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-brain-core'
         run: |
           test -d build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app
           echo "JARVIS.app pronto para empacotamento"
 
       - name: Criar IPA
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-brain-core'
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app build/ipa/Payload/
@@ -143,7 +145,7 @@ jobs:
           zip -r JARVIS-unsigned.ipa Payload
 
       - name: Salvar IPA
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-brain-core'
         uses: actions/upload-artifact@v7
         with:
           name: JARVIS-iOS-unsigned
