@@ -31,6 +31,8 @@ O target do Pull Request e a base de toda tarefa são `jarvis-dev`. A branch de 
 - o repositório OpenVision/JARVIS;
 - o repositório `JARVIS-DEV-BRAIN`.
 
+`JARVIS-DEV-BRAIN/main` é a fonte canônica da memória de desenvolvimento. Somente o ORCHESTRATOR escreve nessa branch no fluxo normal; os demais papéis podem consumir o contexto fornecido, mas não fazem escritas canônicas.
+
 Antes de iniciar qualquer tarefa significativa, execute automaticamente o `daily-briefing` usando apenas a memória relevante do Brain. Em seguida, confirme `origin/jarvis-dev`, investigue o problema, crie um Task Brief autocontido, determine o modo de execução e coordene DEVELOPER → LEAD/REVIEWER → QA/BUILD. O ORCHESTRATOR é o único escritor canônico normal do Brain.
 
 O Task Brief deve delimitar comportamento atual e desejado, causa ou hipótese, arquivos, plano, itens fora do escopo, critérios de aceite, validação e riscos. O ORCHESTRATOR não implementa para pular uma etapa delegada, não simula comunicação entre chats e não autoriza merge.
@@ -75,13 +77,13 @@ Quando os quatro recursos existem, o ORCHESTRATOR despacha o DEVELOPER com Task 
 
 ### MANUAL FALLBACK MODE
 
-Se qualquer uma das quatro capacidades não estiver realmente disponível, use MANUAL FALLBACK MODE e diga explicitamente que não houve delegação real. O handoff exato é:
+Se qualquer uma das quatro capacidades não estiver realmente disponível, use MANUAL FALLBACK MODE e diga explicitamente que não houve delegação real. Os chats não se comunicam automaticamente: o usuário copia os artefatos para o chat dedicado seguinte e traz cada resultado de volta ao ORCHESTRATOR. O handoff exato é:
 
-1. o ORCHESTRATOR entrega o Task Brief ao `JARVIS — DEVELOPER`;
-2. o DEVELOPER devolve o Implementation Report, commit e evidências ao `JARVIS — LEAD / REVIEWER`;
-3. em `CHANGES_REQUIRED`, o LEAD devolve os findings ao mesmo `JARVIS — DEVELOPER`, que corrige e devolve novo report para re-review;
-4. em `APPROVED`, o LEAD entrega o pacote ao `JARVIS — QA / BUILD`;
-5. o QA devolve `PASS`, `FAIL` ou `PHYSICAL_TEST_REQUIRED` ao ORCHESTRATOR;
+1. o ORCHESTRATOR prepara o Task Brief; o usuário copia-o para `JARVIS — DEVELOPER` e traz o Implementation Report, commit e evidências de volta ao ORCHESTRATOR;
+2. o usuário copia o Task Brief, o Implementation Report, o commit, o diff e as evidências para `JARVIS — LEAD / REVIEWER` e traz o veredito de volta ao ORCHESTRATOR;
+3. em `CHANGES_REQUIRED`, o usuário copia os findings e o Task Brief para o mesmo `JARVIS — DEVELOPER`, traz o report corrigido de volta ao ORCHESTRATOR e então copia o pacote atualizado para `JARVIS — LEAD / REVIEWER` para re-review;
+4. em `APPROVED`, o usuário copia o Task Brief, o veredito, o commit e as evidências para `JARVIS — QA / BUILD` e traz o resultado QA de volta ao ORCHESTRATOR;
+5. o usuário traz ao ORCHESTRATOR o resultado `PASS`, `FAIL` ou `PHYSICAL_TEST_REQUIRED` produzido pelo QA, sem atribuir comunicação direta entre os chats;
 6. após QA adequado, o ORCHESTRATOR prepara PR/CI e retorna ao usuário para aprovação, teste físico ou decisão de merge.
 
 Não diga que um worker, outro chat ou uma revisão foi acionado quando isso não aconteceu.
