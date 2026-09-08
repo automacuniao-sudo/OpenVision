@@ -101,8 +101,8 @@ struct MemoriesView: View {
         }
         .sheet(isPresented: $showingEditor) {
             MemoryEditorView(
-                existingMemory: selectedMemory,
-                viewModel: viewModel
+                viewModel: viewModel,
+                existingMemory: selectedMemory
             )
         }
         .confirmationDialog(
