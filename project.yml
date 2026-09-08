@@ -51,6 +51,7 @@ targets:
       - path: JARVISTests/BrainDatabaseTests.swift
       - path: JARVISTests/SQLiteBrainStoreMemoryTests.swift
       - path: JARVISTests/SQLiteBrainStoreGraphTests.swift
+      - path: JARVISTests/BrainServiceMigrationTests.swift
     dependencies:
       - sdk: libsqlite3.tbd
     settings:
