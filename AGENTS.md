@@ -280,7 +280,7 @@ O ORCHESTRATOR:
 
 Importante:
 - o ORCHESTRATOR não deve fingir comunicação entre threads separadas;
-- se a sessão não oferecer delegação real, deve cair para o fluxo manual LEAD → usuário → DEV → usuário → LEAD;
+- se a sessão não oferecer delegação real, deve seguir manualmente o fluxo obrigatório completo: ORCHESTRATOR → usuário → DEVELOPER → usuário → LEAD/REVIEWER → usuário → QA/BUILD → PR/CI quando aplicável → `ready_for_human`;
 - threads `OpenVision — LEAD` e `OpenVision — DEV` continuam válidas como fallback e para diagnóstico.
 
 Para tarefas normais, prefira:
