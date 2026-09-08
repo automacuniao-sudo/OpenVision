@@ -99,6 +99,30 @@ final class BrainDatabase {
         return sqlite3_column_int64(statement, 0)
     }
 
+    func query<T>(
+        _ sql: String,
+        bindings: [SQLiteBinding] = [],
+        mapRow: (OpaquePointer) throws -> T
+    ) throws -> [T] {
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+
+        try bind(bindings, to: statement)
+        var rows: [T] = []
+
+        while true {
+            let stepCode = sqlite3_step(statement)
+            switch stepCode {
+            case SQLITE_ROW:
+                rows.append(try mapRow(statement))
+            case SQLITE_DONE:
+                return rows
+            default:
+                throw sqliteError(code: stepCode)
+            }
+        }
+    }
+
     func userVersion() throws -> Int32 {
         Int32(try scalarInt("PRAGMA user_version"))
     }
