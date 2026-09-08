@@ -42,9 +42,15 @@ targets:
       - path: JARVIS/Utilities/TextChunking.swift
       - path: JARVIS/Utilities/VoiceStopMatching.swift
       - path: JARVIS/Services/Documents/DocumentChunking.swift
+      - path: JARVIS/Services/Brain/Models
+      - path: JARVIS/Services/Brain/Storage
       - path: JARVISTests/DocumentChunkingTests.swift
       - path: JARVISTests/TextChunkingTests.swift
       - path: JARVISTests/VoiceStopMatchingTests.swift
+      - path: JARVISTests/BrainModelsTests.swift
+      - path: JARVISTests/BrainDatabaseTests.swift
+    dependencies:
+      - sdk: libsqlite3.tbd
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -168,5 +174,3 @@ schemes:
       config: Release
     analyze:
       config: Debug
-    archive:
-      config: Release
