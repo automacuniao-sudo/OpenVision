@@ -44,6 +44,8 @@ targets:
       - path: JARVIS/Services/Documents/DocumentChunking.swift
       - path: JARVIS/Services/Brain/Models
       - path: JARVIS/Services/Brain/Storage
+      - path: JARVIS/Services/Brain/Migration
+      - path: JARVIS/Services/Brain/BrainService.swift
       - path: JARVISTests/DocumentChunkingTests.swift
       - path: JARVISTests/TextChunkingTests.swift
       - path: JARVISTests/VoiceStopMatchingTests.swift
