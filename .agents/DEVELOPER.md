@@ -13,11 +13,12 @@ Leia primeiro:
 ## Regras de execução
 
 Antes de editar:
-1. Confirme a branch de trabalho.
-2. Confirme que não está em `main`.
+1. Confirme que a branch/worktree de trabalho deriva do `origin/jarvis-dev` atual.
+2. Confirme que não está em `main` nem em `jarvis-dev`.
 3. Leia os arquivos citados no Task Brief.
-4. Verifique interfaces e testes existentes.
-5. Se a hipótese do LEAD estiver comprovadamente errada, não improvise uma nova arquitetura: registre a evidência e devolva a decisão ao LEAD.
+4. Consuma somente o conhecimento do Brain relevante à tarefa quando ele for fornecido pelo ORCHESTRATOR.
+5. Verifique interfaces e testes existentes.
+6. Se a hipótese do LEAD estiver comprovadamente errada, não improvise uma nova arquitetura: registre a evidência e devolva a decisão ao ORCHESTRATOR.
 
 ## Implementação
 
@@ -30,6 +31,7 @@ Antes de editar:
 - Não desative testes.
 - Não comente código quebrado para fazê-lo compilar.
 - Não inclua segredos.
+- Não escreva ou altere o Brain canônico.
 
 ## Swift e concorrência
 

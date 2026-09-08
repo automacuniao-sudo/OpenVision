@@ -34,33 +34,29 @@ Antes de trabalhar, leia:
 
 ## 2. Papéis oficiais
 
-Há dois papéis principais:
+O fluxo normal usa quatro papéis oficiais:
 
-### LEAD
-Arquivo: `.agents/LEAD.md`
+### ORCHESTRATOR
+Arquivo: `.agents/ORCHESTRATOR.md`
 
-Responsável por:
-- investigar;
-- entender causa raiz;
-- definir arquitetura;
-- criar o plano;
-- dividir o trabalho;
-- revisar o diff do DEV;
-- validar aderência à solicitação;
-- procurar regressões.
+Responsável por investigar, criar o Task Brief, identificar o modo de delegação, coordenar as etapas e manter a memória de desenvolvimento. `JARVIS-DEV-BRAIN/main` é a fonte de verdade dessa memória, e o ORCHESTRATOR é o único escritor canônico normal do Brain.
 
 ### DEVELOPER
 Arquivo: `.agents/DEVELOPER.md`
 
-Responsável por:
-- implementar o plano aprovado;
-- alterar código;
-- criar/ajustar testes;
-- executar validações;
-- corrigir erros;
-- entregar diff e relatório técnico.
+Responsável por implementar apenas o Task Brief aprovado, criar/ajustar testes, executar validações, fazer self-review e entregar o Implementation Report.
 
-O LEAD não deve virar o implementador por conveniência. O DEV não deve mudar arquitetura ou escopo sem registrar a necessidade e devolver a decisão ao LEAD.
+### LEAD/REVIEWER
+Arquivo: `.agents/LEAD.md`
+
+Responsável pela revisão independente da implementação: consumir o Task Brief, o Implementation Report, o diff/commits e as evidências de teste, procurando desvios de escopo, regressões e riscos técnicos.
+
+### QA/BUILD
+Arquivo: `.agents/QA.md`
+
+Responsável por validar critérios de aceite, identidade do build/artefato quando aplicável, CI/testes e requisitos de hardware antes de a tarefa ficar `ready_for_human`.
+
+O ORCHESTRATOR não deve implementar para pular uma rodada delegada quando houver delegação real. O DEVELOPER não deve mudar arquitetura ou escopo sem registrar a necessidade e devolver a decisão ao ORCHESTRATOR. LEAD/REVIEWER e QA/BUILD não escrevem o Brain canônico nem autorizam merge.
 
 ## 3. Regra de ouro
 
@@ -79,13 +75,14 @@ Nunca:
 
 ## 4. Git e isolamento
 
-- Nunca implementar diretamente em `main`.
+- O branch/worktree normal de desenvolvimento JARVIS deve derivar do `origin/jarvis-dev` atual.
+- Nem `main` nem `jarvis-dev` são workspaces de implementação; nunca implemente diretamente neles.
 - Cada tarefa deve usar branch própria.
 - Padrão recomendado: `ai/<numero-ou-data>-<slug>`.
 - Não fazer force-push.
 - Não reescrever histórico compartilhado.
-- Não fazer merge em `main` sem aprovação humana explícita.
-- Antes de começar, confirmar que a branch parte do HEAD atual de `main`.
+- Não fazer merge em `jarvis-dev` sem aprovação humana explícita.
+- Antes de começar, confirmar que a branch deriva do `origin/jarvis-dev` atual.
 - Se dois agentes precisarem trabalhar ao mesmo tempo, usar worktrees/branches isoladas.
 - Evitar que dois agentes editem os mesmos arquivos simultaneamente.
 
@@ -94,8 +91,8 @@ Nunca:
 Para toda mudança não trivial:
 
 1. Usuário descreve objetivo/problema.
-2. LEAD investiga o repositório.
-3. LEAD registra:
+2. ORCHESTRATOR verifica `origin/jarvis-dev`, lê o Brain necessário, classifica/investiga e cria o Task Brief.
+3. O Task Brief registra:
    - comportamento atual;
    - comportamento desejado;
    - causa provável ou causa confirmada;
@@ -103,10 +100,9 @@ Para toda mudança não trivial:
    - riscos;
    - plano numerado;
    - critérios de aceite.
-4. DEV implementa somente o plano.
-5. DEV executa testes/validações apropriadas.
-6. DEV faz self-review do diff.
-7. LEAD revisa:
+4. ORCHESTRATOR detecta `AUTOMATED MODE` ou `MANUAL FALLBACK MODE` sem simular delegação.
+5. DEVELOPER implementa somente o plano, executa as validações apropriadas e faz self-review do diff.
+6. LEAD/REVIEWER revisa de forma independente:
    - conformidade com o pedido;
    - qualidade;
    - regressões;
@@ -114,11 +110,11 @@ Para toda mudança não trivial:
    - áudio;
    - memória;
    - testes.
-8. Se houver problema, DEV corrige.
-9. LEAD revisa novamente.
-10. Abrir PR.
-11. CodeRabbit faz revisão adicional.
-12. Merge somente após aprovação humana.
+7. Se houver `CHANGES_REQUIRED`, DEVELOPER corrige e LEAD/REVIEWER revisa novamente.
+8. QA/BUILD valida o veredito do LEAD, critérios de aceite, CI/build/testes e hardware aplicável.
+9. Abrir/atualizar PR para `jarvis-dev` e aguardar CI/CodeRabbit quando aplicável.
+10. Com revisão aprovada e QA/BUILD adequado, a tarefa fica `ready_for_human`.
+11. Merge em `jarvis-dev` somente após aprovação humana explícita.
 
 ## 6. Áreas de risco do OpenVision
 
@@ -233,9 +229,11 @@ Uma tarefa só está pronta quando:
 - erros/warnings novos foram avaliados;
 - não há segredo no diff;
 - o DEV fez self-review;
-- o LEAD aprovou o diff;
+- o LEAD/REVIEWER aprovou o diff;
+- QA/BUILD registrou veredito e validações pendentes;
 - riscos que dependem de hardware real estão registrados;
-- o PR explica o que mudou e como testar.
+- o PR para `jarvis-dev` explica o que mudou e como testar;
+- a tarefa está `ready_for_human`; o merge ainda depende de aprovação humana explícita.
 
 ## 10. Comunicação com o usuário
 
@@ -263,24 +261,22 @@ Prioridade:
 4. padrões já existentes no código;
 5. preferência pessoal do agente.
 
-Se houver conflito ou ambiguidade com impacto arquitetural, o LEAD decide e registra a decisão antes da implementação.
+Se houver conflito ou ambiguidade com impacto arquitetural, o ORCHESTRATOR decide e registra a decisão antes da implementação.
 
 
-## 12. ORCHESTRATOR — modo automático
+## 12. ORCHESTRATOR — coordenação do fluxo
 
 Arquivo: `.agents/ORCHESTRATOR.md`
 
 O modo preferido para uso diário é um único chat `OpenVision — ORCHESTRATOR`.
 
 O ORCHESTRATOR:
-- atua como LEAD/controlador;
 - investiga e cria o Task Brief;
-- quando o ambiente disponibilizar delegação/subagentes, despacha um DEVELOPER isolado automaticamente;
-- recebe o Implementation Report;
-- revisa o diff;
-- devolve findings ao DEV até aprovação;
-- pode abrir PR após `APPROVED`;
-- nunca faz merge em `main` sem aprovação humana explícita.
+- quando o ambiente disponibilizar delegação/subagentes, despacha um DEVELOPER isolado;
+- encaminha o resultado a um LEAD/REVIEWER independente e depois a QA/BUILD;
+- registra o estado canônico do desenvolvimento em `JARVIS-DEV-BRAIN/main`;
+- pode abrir PR após `APPROVED` e QA adequado;
+- nunca faz merge em `jarvis-dev` sem aprovação humana explícita.
 
 Importante:
 - o ORCHESTRATOR não deve fingir comunicação entre threads separadas;
@@ -290,7 +286,7 @@ Importante:
 Para tarefas normais, prefira:
 
 ```text
-USUÁRIO → ORCHESTRATOR/LEAD → DEVELOPER subagente → ORCHESTRATOR/LEAD → PR → HUMANO
+USUÁRIO → ORCHESTRATOR → DEVELOPER subagente → LEAD/REVIEWER → QA/BUILD → PR/CI → ready_for_human → HUMANO
 ```
 
 Em tarefas independentes, múltiplos agentes só podem trabalhar em paralelo quando seus arquivos/estados não se sobrepõem.
