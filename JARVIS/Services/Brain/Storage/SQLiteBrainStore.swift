@@ -5,6 +5,7 @@ actor SQLiteBrainStore: BrainStore {
     private let location: BrainDatabaseLocation
     private var database: BrainDatabase?
 
+    private static let legacyImportMetadataKey = "legacy_memory_import_v1"
     private static let memoryColumns = """
         id, kind, content, legacy_key, subject_entity_id, status,
         confidence, importance, created_at, updated_at, last_confirmed_at, expires_at
@@ -324,9 +325,112 @@ actor SQLiteBrainStore: BrainStore {
         }
     }
 
-    // Task 5 owns exactly-once legacy import.
     func importLegacyMemories(_ memories: [String: String], at: Date) async throws -> Int {
-        throw Self.notImplemented("importLegacyMemories")
+        let db = try requireDatabase()
+
+        return try db.transaction {
+            let marker = try db.query(
+                "SELECT value FROM brain_metadata WHERE key = ? LIMIT 1",
+                bindings: [.text(Self.legacyImportMetadataKey)]
+            ) { statement in
+                try Self.requiredText(statement, column: 0, field: "brain_metadata.value")
+            }.first
+
+            if marker == "completed" {
+                return 0
+            }
+
+            var importedCount = 0
+            var normalizedKeys = Set<String>()
+
+            for rawKey in memories.keys.sorted() {
+                guard let value = memories[rawKey] else { continue }
+                let normalizedKey = BrainLegacyKey.normalize(rawKey)
+                guard !normalizedKey.isEmpty else {
+                    throw BrainStoreError.invalidData("empty legacy key")
+                }
+                guard normalizedKeys.insert(normalizedKey).inserted else {
+                    throw BrainStoreError.invalidData("duplicate normalized legacy key")
+                }
+
+                let memoryId = UUID()
+                let searchText = Self.searchText(legacyKey: normalizedKey, content: value)
+                try db.execute(
+                    """
+                    INSERT INTO memories(
+                        id, kind, content, legacy_key, search_text, subject_entity_id,
+                        status, confidence, importance, created_at, updated_at,
+                        last_confirmed_at, expires_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    bindings: [
+                        .text(Self.uuid(memoryId)),
+                        .text(BrainMemoryKind.semantic.rawValue),
+                        .text(value),
+                        .text(normalizedKey),
+                        .text(searchText),
+                        .null,
+                        .text(BrainRecordStatus.active.rawValue),
+                        .double(1.0),
+                        .double(0.5),
+                        .double(at.timeIntervalSince1970),
+                        .double(at.timeIntervalSince1970),
+                        .double(at.timeIntervalSince1970),
+                        .null
+                    ]
+                )
+
+                _ = try Self.insertProvenance(
+                    BrainProvenanceInput(
+                        source: .legacyImport,
+                        sourceIdentifier: "settings.json",
+                        note: nil,
+                        timestamp: at
+                    ),
+                    recordType: "memory",
+                    recordId: memoryId,
+                    db: db
+                )
+
+                try db.execute(
+                    """
+                    INSERT INTO learning_events(
+                        id, event_type, target_record_type, target_record_id, source,
+                        timestamp, before_summary, after_summary, reversible
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    bindings: [
+                        .text(Self.uuid(UUID())),
+                        .text(LearningEventType.legacyImport.rawValue),
+                        .text("memory"),
+                        .text(Self.uuid(memoryId)),
+                        .text(BrainProvenanceSource.legacyImport.rawValue),
+                        .double(at.timeIntervalSince1970),
+                        .null,
+                        .null,
+                        .int64(0)
+                    ]
+                )
+
+                importedCount += 1
+            }
+
+            try db.execute(
+                """
+                INSERT INTO brain_metadata(key, value, updated_at)
+                VALUES (?, 'completed', ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                bindings: [
+                    .text(Self.legacyImportMetadataKey),
+                    .double(at.timeIntervalSince1970)
+                ]
+            )
+
+            return importedCount
+        }
     }
 
     func createEntity(_ entity: BrainEntity) async throws -> BrainEntity {
