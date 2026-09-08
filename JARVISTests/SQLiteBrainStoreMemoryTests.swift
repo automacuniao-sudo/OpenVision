@@ -19,7 +19,8 @@ final class SQLiteBrainStoreMemoryTests: XCTestCase {
             createdAt: now, updatedAt: now, lastConfirmedAt: now, expiresAt: nil
         )
         _ = try await store.createMemory(memory, provenance: .init(source: .explicitUser, sourceIdentifier: nil, note: nil, timestamp: now))
-        XCTAssertEqual(try await store.memory(legacyKey: "temperature_unit")?.content, "Prefere Celsius.")
+        let stored = try await store.memory(legacyKey: "temperature_unit")
+        XCTAssertEqual(stored?.content, "Prefere Celsius.")
     }
 
     func testSearchIsCaseAndDiacriticInsensitive() async throws {
@@ -31,7 +32,8 @@ final class SQLiteBrainStoreMemoryTests: XCTestCase {
             createdAt: now, updatedAt: now, lastConfirmedAt: now, expiresAt: nil
         )
         _ = try await store.createMemory(memory, provenance: .init(source: .explicitUser, sourceIdentifier: nil, note: nil, timestamp: now))
-        XCTAssertEqual(try await store.searchMemories(query: "CAFE SAO", statuses: [.active], limit: 8).count, 1)
+        let matches = try await store.searchMemories(query: "CAFE SAO", statuses: [.active], limit: 8)
+        XCTAssertEqual(matches.count, 1)
     }
 
     func testForgetHidesMemoryFromActiveQueriesWithoutDeletingAuditRow() async throws {
@@ -43,9 +45,16 @@ final class SQLiteBrainStoreMemoryTests: XCTestCase {
             createdAt: now, updatedAt: now, lastConfirmedAt: now, expiresAt: nil
         )
         _ = try await store.createMemory(memory, provenance: .init(source: .explicitUser, sourceIdentifier: nil, note: nil, timestamp: now))
-        XCTAssertTrue(try await store.forgetMemory(id: memory.id, at: now.addingTimeInterval(10), provenance: .init(source: .explicitUser, sourceIdentifier: nil, note: nil, timestamp: now)))
-        XCTAssertNil(try await store.memory(legacyKey: "old_fact"))
-        XCTAssertEqual(try await store.memory(id: memory.id)?.status, .forgotten)
+        let forgotten = try await store.forgetMemory(
+            id: memory.id,
+            at: now.addingTimeInterval(10),
+            provenance: .init(source: .explicitUser, sourceIdentifier: nil, note: nil, timestamp: now)
+        )
+        let byLegacyKey = try await store.memory(legacyKey: "old_fact")
+        let byId = try await store.memory(id: memory.id)
+        XCTAssertTrue(forgotten)
+        XCTAssertNil(byLegacyKey)
+        XCTAssertEqual(byId?.status, .forgotten)
     }
 
     func testInvalidConfidenceIsRejectedBeforeSQLiteWrite() async throws {
