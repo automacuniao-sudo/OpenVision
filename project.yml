@@ -83,6 +83,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: JARVIS/JARVIS.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: JARVIS/JARVIS-Bridging-Header.h
     dependencies:
+      - sdk: libsqlite3.tbd
       - package: meta-wearables-dat-ios
         products:
           - MWDATCore
