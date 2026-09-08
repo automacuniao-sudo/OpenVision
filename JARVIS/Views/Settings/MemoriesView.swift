@@ -1,25 +1,36 @@
 // OpenVision - MemoriesView.swift
-// AI memories management (key-value pairs)
+// AI memories management backed by the canonical BrainService.
 
 import SwiftUI
 
 struct MemoriesView: View {
-    // MARK: - Environment
+    @StateObject private var viewModel = MemoriesViewModel()
 
-    @EnvironmentObject var settingsManager: SettingsManager
-
-    // MARK: - State
-
-    @State private var selectedMemory: (key: String, value: String)?
-    @State private var showingEditor: Bool = false
-    @State private var showingDeleteConfirmation: Bool = false
-    @State private var memoryToDelete: String?
-
-    // MARK: - Body
+    @State private var selectedMemory: BrainMemory?
+    @State private var showingEditor = false
+    @State private var showingDeleteConfirmation = false
+    @State private var memoryToDelete: BrainMemory?
 
     var body: some View {
         List {
-            if settingsManager.settings.memories.isEmpty {
+            if let errorMessage = viewModel.errorMessage {
+                Section {
+                    Text(errorMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            if viewModel.isLoading && viewModel.memories.isEmpty {
+                Section {
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .padding(.vertical, 24)
+                }
+            } else if viewModel.memories.isEmpty {
                 Section {
                     VStack(spacing: 12) {
                         Image(systemName: "brain")
@@ -39,18 +50,18 @@ struct MemoriesView: View {
                 }
             } else {
                 Section {
-                    ForEach(sortedMemoryKeys, id: \.self) { key in
+                    ForEach(viewModel.memories) { memory in
                         Button {
-                            selectedMemory = (key: key, value: settingsManager.settings.memories[key] ?? "")
+                            selectedMemory = memory
                             showingEditor = true
                         } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(key)
+                                Text(Self.label(for: memory))
                                     .font(.subheadline)
                                     .fontWeight(.medium)
                                     .foregroundColor(.primary)
 
-                                Text(settingsManager.settings.memories[key] ?? "")
+                                Text(memory.content)
                                     .font(.caption)
                                     .foregroundColor(.secondary)
                                     .lineLimit(2)
@@ -59,7 +70,7 @@ struct MemoriesView: View {
                         }
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) {
-                                memoryToDelete = key
+                                memoryToDelete = memory
                                 showingDeleteConfirmation = true
                             } label: {
                                 Label("Delete", systemImage: "trash")
@@ -69,7 +80,7 @@ struct MemoriesView: View {
                 } header: {
                     Text("Stored Memories")
                 } footer: {
-                    Text("\(settingsManager.settings.memories.count) memories")
+                    Text("\(viewModel.memories.count) memories")
                 }
             }
         }
@@ -85,10 +96,13 @@ struct MemoriesView: View {
                 }
             }
         }
+        .task {
+            await viewModel.reload()
+        }
         .sheet(isPresented: $showingEditor) {
             MemoryEditorView(
-                existingKey: selectedMemory?.key,
-                existingValue: selectedMemory?.value ?? ""
+                existingMemory: selectedMemory,
+                viewModel: viewModel
             )
         }
         .confirmationDialog(
@@ -97,47 +111,39 @@ struct MemoriesView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let key = memoryToDelete {
-                    settingsManager.deleteMemory(key: key)
+                guard let memory = memoryToDelete else { return }
+                Task {
+                    await viewModel.forget(memory: memory)
+                    memoryToDelete = nil
                 }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            if let key = memoryToDelete {
-                Text("Are you sure you want to delete '\(key)'?")
+            if let memory = memoryToDelete {
+                Text("Are you sure you want to delete '\(Self.label(for: memory))'?")
             }
         }
     }
 
-    // MARK: - Computed Properties
-
-    private var sortedMemoryKeys: [String] {
-        settingsManager.settings.memories.keys.sorted()
+    private static func label(for memory: BrainMemory) -> String {
+        memory.legacyKey ?? "memory_\(memory.id.uuidString.prefix(8).lowercased())"
     }
 }
 
 // MARK: - Memory Editor View
 
 struct MemoryEditorView: View {
-    // MARK: - Environment
-
-    @EnvironmentObject var settingsManager: SettingsManager
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject var viewModel: MemoriesViewModel
 
-    // MARK: - Properties
+    let existingMemory: BrainMemory?
 
-    let existingKey: String?
-    let existingValue: String
+    @State private var key = ""
+    @State private var value = ""
+    @State private var showingDeleteConfirmation = false
+    @State private var isSaving = false
 
-    // MARK: - State
-
-    @State private var key: String = ""
-    @State private var value: String = ""
-    @State private var showingDeleteConfirmation: Bool = false
-
-    var isNewMemory: Bool { existingKey == nil }
-
-    // MARK: - Body
+    var isNewMemory: Bool { existingMemory == nil }
 
     var body: some View {
         NavigationStack {
@@ -167,6 +173,14 @@ struct MemoryEditorView: View {
                     Text("The information to remember")
                 }
 
+                if let errorMessage = viewModel.errorMessage {
+                    Section {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 if !isNewMemory {
                     Section {
                         Button(role: .destructive) {
@@ -187,20 +201,29 @@ struct MemoryEditorView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         saveMemory()
-                        dismiss()
                     }
-                    .disabled(key.isEmpty || value.isEmpty)
+                    .disabled(
+                        isSaving ||
+                        key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                        value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                 }
 
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
                         dismiss()
                     }
+                    .disabled(isSaving)
                 }
             }
             .onAppear {
-                key = existingKey ?? ""
-                value = existingValue
+                if let existingMemory {
+                    key = existingMemory.legacyKey ?? "memory_\(existingMemory.id.uuidString.prefix(8).lowercased())"
+                    value = existingMemory.content
+                } else {
+                    key = ""
+                    value = ""
+                }
             }
             .confirmationDialog(
                 "Delete Memory",
@@ -208,10 +231,13 @@ struct MemoryEditorView: View {
                 titleVisibility: .visible
             ) {
                 Button("Delete", role: .destructive) {
-                    if let existingKey {
-                        settingsManager.deleteMemory(key: existingKey)
+                    guard let existingMemory else { return }
+                    Task {
+                        await viewModel.forget(memory: existingMemory)
+                        if viewModel.errorMessage == nil {
+                            dismiss()
+                        }
                     }
-                    dismiss()
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -220,25 +246,28 @@ struct MemoryEditorView: View {
         }
     }
 
-    // MARK: - Methods
-
     private func saveMemory() {
         let trimmedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        if let existingKey, existingKey != trimmedKey {
-            // Key was renamed
-            settingsManager.renameMemory(oldKey: existingKey, newKey: trimmedKey)
-        }
+        isSaving = true
+        Task {
+            if let existingMemory {
+                await viewModel.update(memory: existingMemory, value: trimmedValue)
+            } else {
+                await viewModel.saveNew(key: trimmedKey, value: trimmedValue)
+            }
 
-        settingsManager.setMemory(key: trimmedKey, value: trimmedValue)
-        settingsManager.saveNow()
+            isSaving = false
+            if viewModel.errorMessage == nil {
+                dismiss()
+            }
+        }
     }
 }
 
 #Preview {
     NavigationStack {
         MemoriesView()
-            .environmentObject(SettingsManager.shared)
     }
 }
