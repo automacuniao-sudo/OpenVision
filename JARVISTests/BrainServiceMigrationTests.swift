@@ -61,4 +61,15 @@ final class BrainServiceMigrationTests: XCTestCase {
         let stored = try await service.memory(legacyKey: "temperature_unit")
         XCTAssertEqual(stored?.content, "Celsius sempre")
     }
+
+    func testInitializationDoesNotMutateLegacySourceDictionary() async throws {
+        let store = SQLiteBrainStore(location: .inMemory)
+        let service = BrainService(store: store)
+        var legacy = ["stable": "value"]
+        let before = legacy
+
+        try await service.initialize(legacyMemories: legacy)
+
+        XCTAssertEqual(legacy, before)
+    }
 }
