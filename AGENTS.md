@@ -268,7 +268,7 @@ Se houver conflito ou ambiguidade com impacto arquitetural, o ORCHESTRATOR decid
 
 Arquivo: `.agents/ORCHESTRATOR.md`
 
-O modo preferido para uso diário é um único chat `OpenVision — ORCHESTRATOR`.
+O modo preferido para uso diário é um único chat `JARVIS — ORCHESTRATOR`; `OpenVision — ORCHESTRATOR` permanece como alias legado.
 
 O ORCHESTRATOR:
 - investiga e cria o Task Brief;

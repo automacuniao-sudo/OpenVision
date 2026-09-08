@@ -32,6 +32,15 @@ No `startup`, descubra as ferramentas disponíveis. No `daily-briefing`, leia ap
 
 Não dependa apenas da memória da conversa para tarefas longas. Registre ou atualize no Brain, quando apropriado, a identidade da tarefa, o Task Brief, branch, commits, Implementation Report, vereditos, resultados de CI e pendências. Não commite logs ou artefatos temporários sem necessidade.
 
+Antes de cada escrita ou promoção canônica, siga a política de sincronização de `JARVIS-DEV-BRAIN/AGENTS.md` e `_knowledge/Brain-Workflows.md`:
+
+1. Verifique ou sincronize o estado atual de `JARVIS-DEV-BRAIN/main`, inspecionando alterações locais e mudanças remotas mais recentes.
+2. Se `main` avançou desde a última leitura, releia e reconcilie o conteúdo antes de escrever; nunca sobrescreva estado mais novo com um snapshot antigo. Preserve alterações locais não relacionadas.
+3. Edite somente os arquivos necessários, revise o diff e confirme que não há segredos ou credenciais.
+4. Faça commit e push sem force-push somente dentro da autorização atual. Um conflito não resolvido bloqueia a promoção canônica e deve ser reportado.
+
+Esse procedimento não concede autorização de merge ou promoção para `main`; restrições explícitas da tarefa continuam valendo, inclusive quando a preparação ocorre em branch isolada.
+
 ## Delegação
 
 Determine uma vez por sessão se há delegação real:
