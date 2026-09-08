@@ -16,12 +16,7 @@ enum BrainMemoryKind: String, Codable, CaseIterable, Sendable {
 }
 
 enum BrainEntityType: String, Codable, CaseIterable, Sendable {
-    case user
-    case person
-    case organization
-    case place
-    case thing
-    case concept
+    case user, person, organization, place, thing, concept
 }
 
 enum BrainProvenanceSource: String, Codable, CaseIterable, Sendable {
@@ -33,12 +28,7 @@ enum BrainProvenanceSource: String, Codable, CaseIterable, Sendable {
     case manualEdit = "manual_edit"
 }
 
-enum BrainBiometricKind: String, Codable, CaseIterable, Sendable {
-    case face
-    case speaker
-}
-
-enum BrainLearningEventType: String, Codable, CaseIterable, Sendable {
+enum LearningEventType: String, Codable, CaseIterable, Sendable {
     case explicitCorrection = "explicit_correction"
     case explicitPreference = "explicit_preference"
     case confirmation
@@ -49,15 +39,19 @@ enum BrainLearningEventType: String, Codable, CaseIterable, Sendable {
     case manualEdit = "manual_edit"
 }
 
+enum BiometricKind: String, Codable, CaseIterable, Sendable {
+    case face, speaker
+}
+
 enum BrainValidationError: Error, Equatable {
-    case outOfRange(field: String)
+    case valueOutsideUnitInterval(field: String, value: Double)
 }
 
 enum BrainValidation {
     @discardableResult
     static func unitInterval(_ value: Double, field: String) throws -> Double {
         guard (0.0...1.0).contains(value) else {
-            throw BrainValidationError.outOfRange(field: field)
+            throw BrainValidationError.valueOutsideUnitInterval(field: field, value: value)
         }
         return value
     }
@@ -66,10 +60,7 @@ enum BrainValidation {
 enum BrainLegacyKey {
     static func normalize(_ raw: String) -> String {
         let folded = raw
-            .folding(
-                options: [.caseInsensitive, .diacriticInsensitive],
-                locale: Locale(identifier: "pt_BR")
-            )
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
             .lowercased()
         let cleaned = folded
             .replacingOccurrences(of: "[^a-z0-9_]+", with: "_", options: .regularExpression)
@@ -78,11 +69,8 @@ enum BrainLegacyKey {
     }
 
     static func searchText(_ raw: String) -> String {
-        raw
-            .folding(
-                options: [.caseInsensitive, .diacriticInsensitive],
-                locale: Locale(identifier: "pt_BR")
-            )
+        raw.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
             .lowercased()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
