@@ -46,6 +46,7 @@ targets:
       - path: JARVIS/Services/Brain/Storage
       - path: JARVIS/Services/Brain/Migration
       - path: JARVIS/Services/Brain/BrainService.swift
+      - path: JARVIS/Services/NativeTools/MemoryTool.swift
       - path: JARVISTests/DocumentChunkingTests.swift
       - path: JARVISTests/TextChunkingTests.swift
       - path: JARVISTests/VoiceStopMatchingTests.swift
@@ -54,6 +55,7 @@ targets:
       - path: JARVISTests/SQLiteBrainStoreMemoryTests.swift
       - path: JARVISTests/SQLiteBrainStoreGraphTests.swift
       - path: JARVISTests/BrainServiceMigrationTests.swift
+      - path: JARVISTests/MemoryToolBrainTests.swift
     dependencies:
       - sdk: libsqlite3.tbd
     settings:
