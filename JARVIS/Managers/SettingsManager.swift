@@ -67,6 +67,7 @@ final class SettingsManager: ObservableObject {
 
     // MARK: - Memory Management
 
+    // Legacy rollback/migration surface. Runtime memory is canonical in BrainService after Brain initialization.
     /// Add or update a memory
     func setMemory(key: String, value: String) {
         settings.memories[key] = value
