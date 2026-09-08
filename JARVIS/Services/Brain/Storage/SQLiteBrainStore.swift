@@ -189,6 +189,7 @@ actor SQLiteBrainStore: BrainStore {
         guard !statuses.isEmpty else { return [] }
         let normalizedQuery = BrainLegacyKey.searchText(query)
         guard !normalizedQuery.isEmpty else { return [] }
+        let likePattern = Self.likeSearchPattern(normalizedQuery)
 
         let db = try requireDatabase()
         let filter = Self.statusFilter(statuses)
@@ -204,7 +205,7 @@ actor SQLiteBrainStore: BrainStore {
             LIMIT ?
             """,
             bindings: filter.bindings + [
-                .text(normalizedQuery),
+                .text(likePattern),
                 .int64(Int64(safeLimit))
             ],
             mapRow: Self.decodeMemory
@@ -250,6 +251,7 @@ actor SQLiteBrainStore: BrainStore {
     ) async throws -> Int {
         let normalizedQuery = BrainLegacyKey.searchText(query)
         guard !normalizedQuery.isEmpty else { return 0 }
+        let likePattern = Self.likeSearchPattern(normalizedQuery)
 
         let db = try requireDatabase()
         let ids = try db.query(
@@ -260,7 +262,7 @@ actor SQLiteBrainStore: BrainStore {
               AND search_text LIKE '%' || ? || '%'
             ORDER BY updated_at DESC, id ASC
             """,
-            bindings: [.text(normalizedQuery)]
+            bindings: [.text(likePattern)]
         ) { statement in
             let text = try Self.requiredText(statement, column: 0, field: "memories.id")
             guard let id = UUID(uuidString: text) else {
@@ -505,6 +507,13 @@ actor SQLiteBrainStore: BrainStore {
 
     private static func searchText(legacyKey: String?, content: String) -> String {
         BrainLegacyKey.searchText([legacyKey, content].compactMap { $0 }.joined(separator: " "))
+    }
+
+    private static func likeSearchPattern(_ normalizedQuery: String) -> String {
+        normalizedQuery
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+            .joined(separator: "%")
     }
 
     private static func statusFilter(
