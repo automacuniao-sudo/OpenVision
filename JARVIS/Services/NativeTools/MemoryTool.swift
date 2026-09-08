@@ -1,9 +1,15 @@
 // JARVIS - MemoryTool.swift
-// Persistent voice-writable memory backed by SettingsManager.settings.memories.
+// Persistent voice-writable memory backed by the canonical BrainService.
 
 import Foundation
 
 struct MemoryTool: NativeTool {
+    private let brain: BrainService
+
+    init(brain: BrainService = .shared) {
+        self.brain = brain
+    }
+
     let name = "memory"
     let description = """
     Save, search, list, read, or forget persistent JARVIS memories. Use this only when the user     explicitly wants JARVIS to remember/store a stable fact, or asks what JARVIS remembers.     Conversation context alone is temporary and must never be described as saved memory.
@@ -33,89 +39,82 @@ struct MemoryTool: NativeTool {
     ]
 
     func execute(args: [String: Any]) async throws -> String {
+        do {
+            return try await executeWithBrain(args: args)
+        } catch BrainStoreError.notInitialized {
+            return "A memória persistente está temporariamente indisponível."
+        }
+    }
+
+    private func executeWithBrain(args: [String: Any]) async throws -> String {
         let action = (args["action"] as? String ?? "list").lowercased()
 
         switch action {
         case "remember":
-            let value = (args["value"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = (args["value"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             guard !value.isEmpty else { return "Qual informação você quer que eu lembre?" }
 
-            var key = Self.cleanKey(args["key"] as? String ?? "")
+            var key = BrainLegacyKey.normalize(args["key"] as? String ?? "")
             if key.isEmpty {
                 key = "memoria_" + Self.timestampKey()
             }
 
-            await MainActor.run {
-                SettingsManager.shared.setMemory(key: key, value: value)
-                SettingsManager.shared.saveNow()
-                DiagnosticLogger.shared.log("Memory", "Persistent memory saved key=\(key)")
-            }
+            _ = try await brain.rememberLegacy(
+                key: key,
+                value: value,
+                source: .explicitUser
+            )
             return "Memória salva permanentemente com a chave \(key)."
 
         case "get":
-            let key = Self.cleanKey(args["key"] as? String ?? "")
+            let key = BrainLegacyKey.normalize(args["key"] as? String ?? "")
             guard !key.isEmpty else { return "Qual memória devo consultar?" }
-            let value = await MainActor.run { SettingsManager.shared.settings.memories[key] }
-            return value.map { "\(key): \($0)" } ?? "Não encontrei a memória \(key)."
+
+            let memory = try await brain.memory(legacyKey: key)
+            return memory.map { "\(key): \($0.content)" } ?? "Não encontrei a memória \(key)."
 
         case "search":
             let query = (args["query"] as? String ?? args["key"] as? String ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
             guard !query.isEmpty else { return "O que devo procurar nas memórias?" }
-            let memories = await MainActor.run { SettingsManager.shared.settings.memories }
-            let matches = memories
-                .filter { $0.key.lowercased().contains(query) || $0.value.lowercased().contains(query) }
-                .sorted { $0.key < $1.key }
-                .prefix(8)
+
+            let matches = try await brain.searchActiveMemories(query: query, limit: 8)
             guard !matches.isEmpty else { return "Não encontrei memórias sobre \(query)." }
-            return matches.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+            return matches.map(Self.formatMemory).joined(separator: "\n")
 
         case "forget":
-            let exactKey = Self.cleanKey(args["key"] as? String ?? "")
-            let query = (args["query"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            let exactKey = BrainLegacyKey.normalize(args["key"] as? String ?? "")
+            let query = (args["query"] as? String ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
 
             if !exactKey.isEmpty {
-                let existed = await MainActor.run { SettingsManager.shared.settings.memories[exactKey] != nil }
-                guard existed else { return "Não encontrei a memória \(exactKey)." }
-                await MainActor.run {
-                    SettingsManager.shared.deleteMemory(key: exactKey)
-                    SettingsManager.shared.saveNow()
-                    DiagnosticLogger.shared.log("Memory", "Persistent memory deleted key=\(exactKey)")
-                }
+                let forgotten = try await brain.forgetLegacy(
+                    key: exactKey,
+                    source: .explicitUser
+                )
+                guard forgotten else { return "Não encontrei a memória \(exactKey)." }
                 return "Memória \(exactKey) apagada."
             }
 
             guard !query.isEmpty else { return "Qual memória você quer que eu esqueça?" }
-            let keys = await MainActor.run {
-                SettingsManager.shared.settings.memories
-                    .filter { $0.key.lowercased().contains(query) || $0.value.lowercased().contains(query) }
-                    .map(\.key)
-            }
-            guard !keys.isEmpty else { return "Não encontrei memórias sobre \(query)." }
-            await MainActor.run {
-                for key in keys { SettingsManager.shared.deleteMemory(key: key) }
-                SettingsManager.shared.saveNow()
-                DiagnosticLogger.shared.log("Memory", "Persistent memories deleted count=\(keys.count)")
-            }
-            return "Apaguei \(keys.count) memória(s) relacionadas a \(query)."
+            let forgottenCount = try await brain.forgetMemories(
+                matching: query,
+                source: .explicitUser
+            )
+            guard forgottenCount > 0 else { return "Não encontrei memórias sobre \(query)." }
+            return "Apaguei \(forgottenCount) memória(s) relacionadas a \(query)."
 
         default:
-            let memories = await MainActor.run { SettingsManager.shared.settings.memories }
+            let memories = try await brain.listActiveMemories(limit: 12)
             guard !memories.isEmpty else { return "Ainda não tenho memórias persistentes." }
-            let top = memories.sorted { $0.key < $1.key }.prefix(12)
-            return top.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
+            return memories.map(Self.formatMemory).joined(separator: "\n")
         }
     }
 
-    private static func cleanKey(_ raw: String) -> String {
-        let folded = raw
-            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "pt_BR"))
-            .lowercased()
-        let cleaned = folded
-            .replacingOccurrences(of: "[^a-z0-9_]+", with: "_", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-        return String(cleaned.prefix(64))
+    private static func formatMemory(_ memory: BrainMemory) -> String {
+        let label = memory.legacyKey ?? memory.id.uuidString.lowercased()
+        return "\(label): \(memory.content)"
     }
 
     private static func timestampKey() -> String {
