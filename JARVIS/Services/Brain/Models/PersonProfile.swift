@@ -1,6 +1,6 @@
 import Foundation
 
-struct PersonProfile: Codable, Equatable, Sendable, Identifiable {
+struct PersonProfile: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     var displayName: String?
     var createdAt: Date
@@ -30,4 +30,24 @@ struct PersonProfile: Codable, Equatable, Sendable, Identifiable {
         self.status = status
         self.confidence = confidence
     }
+}
+
+struct PersonAlias: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    let personId: UUID
+    var alias: String
+    var normalizedAlias: String
+    var confidence: Double
+    var createdAt: Date
+    var updatedAt: Date
+}
+
+struct BiometricReference: Identifiable, Codable, Equatable, Sendable {
+    let id: UUID
+    let personId: UUID
+    var kind: BiometricKind
+    var storageReference: String
+    var quality: Double?
+    var createdAt: Date
+    var updatedAt: Date
 }
