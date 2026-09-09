@@ -58,6 +58,14 @@ struct JARVISApp: App {
             }
             .preferredColorScheme(.dark)
             .task {
+                let legacySnapshot = SettingsManager.shared.settings.memories
+                do {
+                    try await BrainService.shared.initialize(legacyMemories: legacySnapshot)
+                    DiagnosticLogger.shared.log("Brain", "Initialized schema=1")
+                } catch {
+                    DiagnosticLogger.shared.log("Brain", "Initialization failed")
+                }
+
                 // Restore optional self-hosted metrics after relaunch; marking itself is always cheap.
                 MetricsCollector.shared.restoreAtLaunch()
             }

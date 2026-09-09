@@ -42,9 +42,24 @@ targets:
       - path: JARVIS/Utilities/TextChunking.swift
       - path: JARVIS/Utilities/VoiceStopMatching.swift
       - path: JARVIS/Services/Documents/DocumentChunking.swift
+      - path: JARVIS/Services/Brain/Models
+      - path: JARVIS/Services/Brain/Storage
+      - path: JARVIS/Services/Brain/Migration
+      - path: JARVIS/Services/Brain/BrainService.swift
+      - path: JARVIS/Services/NativeTools/MemoryTool.swift
+      - path: JARVIS/Views/Settings/MemoriesViewModel.swift
       - path: JARVISTests/DocumentChunkingTests.swift
       - path: JARVISTests/TextChunkingTests.swift
       - path: JARVISTests/VoiceStopMatchingTests.swift
+      - path: JARVISTests/BrainModelsTests.swift
+      - path: JARVISTests/BrainDatabaseTests.swift
+      - path: JARVISTests/SQLiteBrainStoreMemoryTests.swift
+      - path: JARVISTests/SQLiteBrainStoreGraphTests.swift
+      - path: JARVISTests/BrainServiceMigrationTests.swift
+      - path: JARVISTests/MemoryToolBrainTests.swift
+      - path: JARVISTests/MemoriesViewModelTests.swift
+    dependencies:
+      - sdk: libsqlite3.tbd
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
@@ -83,6 +98,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: JARVIS/JARVIS.entitlements
         SWIFT_OBJC_BRIDGING_HEADER: JARVIS/JARVIS-Bridging-Header.h
     dependencies:
+      - sdk: libsqlite3.tbd
       - package: meta-wearables-dat-ios
         products:
           - MWDATCore
@@ -167,5 +183,3 @@ schemes:
       config: Release
     analyze:
       config: Debug
-    archive:
-      config: Release
