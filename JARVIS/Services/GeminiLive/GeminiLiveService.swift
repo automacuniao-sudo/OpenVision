@@ -245,6 +245,14 @@ final class GeminiLiveService: ObservableObject {
             resumption["handle"] = handle
         }
 
+        let brainContext = await PromptContextBuilder.shared
+            .buildSessionSnapshot(maxCharacters: 1600)
+            .renderedContext(maxCharacters: 1600)
+        let systemPrompt = GeminiPromptContextAdapter.makePrompt(
+            basePrompt: buildSystemPrompt(),
+            brainContext: brainContext
+        )
+
         let setup: [String: Any] = [
             "setup": [
                 "model": Constants.GeminiLive.modelName,
@@ -263,7 +271,7 @@ final class GeminiLiveService: ObservableObject {
                 ],
                 "systemInstruction": [
                     "parts": [
-                        ["text": buildSystemPrompt()]
+                        ["text": systemPrompt]
                     ]
                 ],
                 "realtimeInputConfig": [
@@ -354,15 +362,6 @@ final class GeminiLiveService: ObservableObject {
         let userPrompt = SettingsManager.shared.settings.userPrompt
         if !userPrompt.isEmpty {
             prompt += "\n\nAdditional instructions from user:\n\(userPrompt)"
-        }
-
-        // Add memories
-        let memories = SettingsManager.shared.settings.memories
-        if !memories.isEmpty {
-            prompt += "\n\nThings to remember about the user:"
-            for (key, value) in memories {
-                prompt += "\n- \(key): \(value)"
-            }
         }
 
         return prompt
