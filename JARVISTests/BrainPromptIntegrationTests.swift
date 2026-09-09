@@ -29,4 +29,31 @@ final class BrainPromptIntegrationTests: XCTestCase {
             base
         )
     }
+
+    func testGeminiLiveSetupBuildsBoundedBrainSessionSnapshot() throws {
+        let source = try geminiLiveSource()
+
+        XCTAssertTrue(source.contains("PromptContextBuilder.shared"))
+        XCTAssertTrue(source.contains("buildSessionSnapshot("))
+        XCTAssertTrue(source.contains("GeminiPromptContextAdapter.makePrompt"))
+    }
+
+    func testGeminiLiveNoLongerReadsLegacySettingsMemoryDictionary() throws {
+        let source = try geminiLiveSource()
+
+        XCTAssertFalse(source.contains("SettingsManager.shared.settings.memories"))
+    }
+
+    private func geminiLiveSource() throws -> String {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sourceURL = repositoryRoot
+            .appendingPathComponent("JARVIS")
+            .appendingPathComponent("Services")
+            .appendingPathComponent("GeminiLive")
+            .appendingPathComponent("GeminiLiveService.swift")
+
+        return try String(contentsOf: sourceURL, encoding: .utf8)
+    }
 }
