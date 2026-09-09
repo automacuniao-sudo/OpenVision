@@ -64,7 +64,12 @@ jobs:
           for attempt in 1 2 3; do
             echo "Package resolution attempt $attempt/3"
             rm -rf "$HOME/Library/Caches/org.swift.swiftpm/repositories"
-            if xcodebuild               -resolvePackageDependencies               -project JARVIS.xcodeproj               -scheme JARVIS               -clonedSourcePackagesDirPath build/SourcePackages               -disablePackageRepositoryCache; then
+            if xcodebuild \
+              -resolvePackageDependencies \
+              -project JARVIS.xcodeproj \
+              -scheme JARVIS \
+              -clonedSourcePackagesDirPath build/SourcePackages \
+              -disablePackageRepositoryCache; then
               break
             fi
 
@@ -127,14 +132,15 @@ jobs:
             DEVELOPMENT_TEAM="" \
             build-for-testing
 
+      # Controlled exception for PR #22 / Build 43 physical validation. Remove before merge.
       - name: Verificar produto compilado
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-retrieval-context'
         run: |
           test -d build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app
           echo "JARVIS.app pronto para empacotamento"
 
       - name: Criar IPA
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-retrieval-context'
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app build/ipa/Payload/
@@ -143,7 +149,7 @@ jobs:
           zip -r JARVIS-unsigned.ipa Payload
 
       - name: Salvar IPA
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-retrieval-context'
         uses: actions/upload-artifact@v7
         with:
           name: JARVIS-iOS-unsigned
