@@ -61,6 +61,7 @@ targets:
       - path: JARVISTests/MemoriesViewModelTests.swift
       - path: JARVISTests/BrainRetrieverTests.swift
       - path: JARVISTests/PromptContextBuilderTests.swift
+      - path: JARVISTests/BrainPromptIntegrationTests.swift
     dependencies:
       - sdk: libsqlite3.tbd
     settings:
