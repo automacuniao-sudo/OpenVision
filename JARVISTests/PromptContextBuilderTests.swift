@@ -5,7 +5,7 @@ import XCTest
 
 final class PromptContextBuilderTests: XCTestCase {
     func testBuilderReturnsEmptyContextWhenBrainUnavailable() async {
-        let source = PromptContextFakeSource(readiness: .unavailable)
+        let source = PromptContextFakeSource(readiness: .notInitialized)
         let builder = PromptContextBuilder(source: source)
 
         let context = await builder.build(
