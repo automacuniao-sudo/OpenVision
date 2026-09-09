@@ -79,6 +79,9 @@ struct AppSettings: Codable, Equatable {
     /// falling back to keyless DuckDuckGo if Tavily is unavailable.
     var tavilyAPIKey: String = ""
 
+    /// Public Spotify Developer Client ID. OAuth tokens are stored separately in Keychain.
+    var spotifyClientID: String = ""
+
     var localGemmaModelId: String = "mlx-community/gemma-4-E2B-it-4bit"
     var localGemmaModelReady: Bool = false
 
@@ -129,6 +132,10 @@ struct AppSettings: Codable, Equatable {
 
     var isOpenAIConfigured: Bool {
         !openAIAPIKey.isEmpty && !openAIBaseURL.isEmpty
+    }
+
+    var isSpotifyConfigured: Bool {
+        !spotifyClientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var isLocalGemmaConfigured: Bool {

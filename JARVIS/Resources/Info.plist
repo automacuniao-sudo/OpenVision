@@ -46,7 +46,7 @@
         <string>LaunchBackground</string>
     </dict>
 
-    <!-- URL Schemes for Meta AI Callback -->
+    <!-- URL Schemes for Meta AI and Spotify callbacks -->
     <key>CFBundleURLTypes</key>
     <array>
         <dict>
@@ -59,12 +59,23 @@
                 <string>$(APP_LINK_URL_SCHEME)</string>
             </array>
         </dict>
+        <dict>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>CFBundleURLName</key>
+            <string>com.jarvis.spotify.callback</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>jarvis-spotify</string>
+            </array>
+        </dict>
     </array>
 
-    <!-- Queried URL Schemes (Meta AI app) -->
+    <!-- Queried URL Schemes -->
     <key>LSApplicationQueriesSchemes</key>
     <array>
         <string>fb-viewapp</string>
+        <string>spotify</string>
     </array>
 
     <!-- Required Device Capabilities -->
