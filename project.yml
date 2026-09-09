@@ -60,6 +60,7 @@ targets:
       - path: JARVISTests/MemoryToolBrainTests.swift
       - path: JARVISTests/MemoriesViewModelTests.swift
       - path: JARVISTests/BrainRetrieverTests.swift
+      - path: JARVISTests/PromptContextBuilderTests.swift
     dependencies:
       - sdk: libsqlite3.tbd
     settings:
