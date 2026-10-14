@@ -38,12 +38,11 @@ jobs:
 
       - name: Criar arquivos de configuracao
         run: |
-          cp Config.xcconfig.example Config.xcconfig
+          cp Config.developer.xcconfig Config.xcconfig
           cp JARVIS/Config/Config.swift.example JARVIS/Config/Config.swift
 
-          sed -i '' 's/YOUR_TEAM_ID//' Config.xcconfig
-          sed -i '' 's/com.yourcompany.jarvis/com.automacuniao.jarvis/' Config.xcconfig
-          sed -i '' 's/YOUR_META_APP_ID/0000000000/g' Config.xcconfig
+      - name: Testar validacao da configuracao Meta
+        run: python3 -m unittest discover -s scripts/tests -v
 
       - name: Instalar Metal Toolchain
         run: |
@@ -132,7 +131,10 @@ jobs:
             DEVELOPMENT_TEAM="" \
             build-for-testing
 
-      # Controlled exception for PR #22 / Build 43 physical validation. Remove before merge.
+      - name: Validar configuracao Meta no app compilado
+        run: python3 scripts/validate_meta_developer_config.py build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app/Info.plist
+
+      # Controlled exception for PR #22 physical validation. Remove before merge.
       - name: Verificar produto compilado
         if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-retrieval-context'
         run: |
