@@ -23,6 +23,12 @@ final class GlassesManager: ObservableObject {
     @Published var isStreaming: Bool = false
     @Published var lastFrame: UIImage?
     private(set) var lastFrameTime: Date = .distantPast
+    private(set) var isCameraReady = false
+    var hasCameraSession: Bool { isStartingCamera || camera != nil || deviceSession != nil }
+    private(set) var lastPhotoTime: Date = .distantPast
+    private var receivedFrames = 0
+    private var convertedFrames = 0
+    private var conversionFailures = 0
     @Published var lastPhotoData: Data?
     @Published var errorMessage: String?
 
@@ -31,6 +37,8 @@ final class GlassesManager: ObservableObject {
     private let wearables = Wearables.shared
     private var deviceSession: DeviceSession?
     private var camera: Camera?
+    private var isStartingCamera = false
+    private(set) var streamGeneration = UUID()
 
     private var registrationTask: Task<Void, Never>?
     private var devicesTask: Task<Void, Never>?
@@ -106,24 +114,30 @@ final class GlassesManager: ObservableObject {
 
     // MARK: - Streaming
 
-    func startStreaming() async {
+    @discardableResult
+    func startStreaming() async -> UUID? {
         guard isRegistered else {
             errorMessage = "Not registered with Meta AI"
             log("Cannot start streaming: not registered")
-            return
+            return nil
         }
 
-        guard !isStreaming else {
+        guard !isStreaming && !hasCameraSession else {
             log("Already streaming")
-            return
+            return nil
         }
 
         guard let deviceId = connectedDevice else {
             errorMessage = "No glasses connected"
             log("Cannot start streaming: no connected device")
-            return
+            return nil
         }
 
+        let generation = UUID()
+        streamGeneration = generation
+        isStartingCamera = true
+        isCameraReady = false
+        defer { if streamGeneration == generation { isStartingCamera = false } }
         errorMessage = nil
         log("Starting camera stream device=\(deviceId)")
 
@@ -155,14 +169,15 @@ final class GlassesManager: ObservableObject {
             guard status == .granted else {
                 errorMessage = "Camera permission denied"
                 log("Camera permission not granted")
-                return
+                return nil
             }
         } catch {
             errorMessage = "Permission error: \(error.localizedDescription)"
             log("Camera permission error: \(error.localizedDescription)")
-            return
+            return nil
         }
 
+        guard streamGeneration == generation, !Task.isCancelled else { return nil }
         let selector = SpecificDeviceSelector(device: deviceId)
         let config = StreamConfiguration(
             videoCodec: .raw,
@@ -211,13 +226,18 @@ final class GlassesManager: ObservableObject {
                 return first
             }
 
+            guard streamGeneration == generation, !Task.isCancelled else {
+                if streamGeneration == generation { await stopStreaming() }
+                else { session.stop() }
+                return nil
+            }
             guard started else {
                 errorMessage = "Device session did not start (timeout or device rejected session)"
                 log("DeviceSession failed to reach .started")
                 dumpSDKLogs(since: 30)
                 session.stop()
                 deviceSession = nil
-                return
+                return nil
             }
 
             guard let attachedCamera = try session.addCamera(config: config) else {
@@ -226,14 +246,14 @@ final class GlassesManager: ObservableObject {
                 dumpSDKLogs(since: 30)
                 session.stop()
                 deviceSession = nil
-                return
+                return nil
             }
 
             camera = attachedCamera
             setupStreamListeners(stream: attachedCamera.stream)
             attachedCamera.stream.start()
             isStreaming = true
-            log("Streaming started successfully")
+            log("Camera stream requested; waiting for SDK streaming state")
         } catch {
             errorMessage = "Stream start failed: \(error.localizedDescription)"
             log("Stream start error: \(error.localizedDescription)")
@@ -244,10 +264,13 @@ final class GlassesManager: ObservableObject {
             deviceSession = nil
             isStreaming = false
         }
+        return streamGeneration == generation && camera != nil ? generation : nil
     }
 
     func stopStreaming() async {
-        guard isStreaming || camera != nil || deviceSession != nil else { return }
+        guard isStreaming || hasCameraSession else { return }
+        streamGeneration = UUID()
+        isStartingCamera = false
 
         log("Stopping camera stream")
         camera?.stop()
@@ -257,7 +280,10 @@ final class GlassesManager: ObservableObject {
         camera = nil
         deviceSession = nil
         isStreaming = false
+        isCameraReady = false
         lastFrame = nil
+        lastPhotoData = nil
+        lastPhotoTime = .distantPast
         lastFrameTime = .distantPast
         log("Streaming stopped")
     }
@@ -307,35 +333,48 @@ final class GlassesManager: ObservableObject {
     }
 
     private func setupStreamListeners(stream: MWDATCamera.Stream) {
+        let generation = streamGeneration
         stateListenerToken = stream.statePublisher.listen { [weak self] state in
             Task { @MainActor in
-                self?.log("Camera stream state=\(state)")
+                guard let self, self.streamGeneration == generation else { return }
+                self.log("Camera stream state=\(state)")
                 switch state {
                 case .streaming:
-                    self?.isStreaming = true
+                    self.isStreaming = true
+                    self.isCameraReady = true
                 case .stopped:
-                    self?.isStreaming = false
+                    await self.stopStreaming()
                 default:
-                    break
+                    self.isCameraReady = false
                 }
             }
         }
 
         videoFrameListenerToken = stream.videoFramePublisher.listen { [weak self] frame in
             Task { @MainActor in
-                self?.onVideoSampleBuffer?(frame.sampleBuffer)
+                guard let self, self.streamGeneration == generation else { return }
+                self.receivedFrames += 1
+                self.onVideoSampleBuffer?(frame.sampleBuffer)
                 if let image = frame.makeUIImage() {
-                    self?.lastFrame = image
-                    self?.lastFrameTime = Date()
-                    self?.onVideoFrame?(image)
+                    self.convertedFrames += 1
+                    self.lastFrame = image
+                    self.lastFrameTime = Date()
+                    self.onVideoFrame?(image)
+                } else {
+                    self.conversionFailures += 1
+                }
+                if self.receivedFrames == 1 || self.receivedFrames % 150 == 0 {
+                    self.log("Frames received=\(self.receivedFrames) converted=\(self.convertedFrames) conversionFailed=\(self.conversionFailures)")
                 }
             }
         }
 
         photoDataListenerToken = stream.photoDataPublisher.listen { [weak self] photoData in
             Task { @MainActor in
+                guard self?.streamGeneration == generation else { return }
                 let data = photoData.data
                 self?.lastPhotoData = data
+                self?.lastPhotoTime = Date()
                 self?.onPhotoCaptured?(data)
                 self?.log("Photo captured bytes=\(data.count)")
             }
@@ -343,6 +382,8 @@ final class GlassesManager: ObservableObject {
 
         errorListenerToken = stream.errorPublisher.listen { [weak self] error in
             Task { @MainActor in
+                guard self?.streamGeneration == generation else { return }
+                self?.isCameraReady = false
                 // DAT's raw-video codec is expected to pause when the app is inactive/screen-locked.
                 // Do not throw a scary modal for that expected lifecycle event; keep it in logs.
                 if UIApplication.shared.applicationState == .active {

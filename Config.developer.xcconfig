@@ -1,0 +1,8 @@
+// Personal Meta AI Developer Mode; unsigned CI artifact, signed when installed.
+// Empty MetaAppID selects the SDK's no-attestation registration path.
+// Do not put production credentials in this file.
+DEVELOPMENT_TEAM =
+PRODUCT_BUNDLE_IDENTIFIER = com.automacuniao.jarvis
+META_APP_ID =
+CLIENT_TOKEN =
+APP_LINK_URL_SCHEME = jarvis
