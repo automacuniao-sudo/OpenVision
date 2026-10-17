@@ -7,14 +7,7 @@ import UIKit
 final class VisionCaptureService {
     static let shared = VisionCaptureService()
 
-    enum CaptureSource: String {
-        case automatic = "auto"
-        case glasses
-        /// Backward-compatible generic iPhone source. This continues to mean the rear camera.
-        case phone
-        case phoneFront = "phone_front"
-        case phoneBack = "phone_back"
-    }
+    typealias CaptureSource = CameraPolicy.Source
 
     struct CapturedImage {
         let image: UIImage
@@ -35,20 +28,24 @@ final class VisionCaptureService {
         }
     }
 
+    private var captureInProgress = false
+    private var captureWaiters: [CheckedContinuation<Void, Never>] = []
+
     private init() {}
 
     func captureImage(
         preferred source: CaptureSource = .automatic,
         keepGlassesStreaming: Bool = false
     ) async throws -> CapturedImage {
+        if captureInProgress {
+            await withCheckedContinuation { captureWaiters.append($0) }
+        } else { captureInProgress = true }
+        defer {
+            if captureWaiters.isEmpty { captureInProgress = false }
+            else { captureWaiters.removeFirst().resume() }
+        }
+        try Task.checkCancellation()
         switch source {
-        case .glasses:
-            guard let image = await captureFromGlasses(keepStreaming: keepGlassesStreaming) else {
-                throw CaptureError.glassesUnavailable
-            }
-            DiagnosticLogger.shared.log("Vision", "Captured image source=glasses")
-            return CapturedImage(image: image, source: .glasses)
-
         case .phone:
             let image = try await PhoneCameraService.shared.capturePhoto(position: .back)
             DiagnosticLogger.shared.log("Vision", "Captured image source=phone_back")
@@ -64,7 +61,7 @@ final class VisionCaptureService {
             DiagnosticLogger.shared.log("Vision", "Captured image source=phone_back")
             return CapturedImage(image: image, source: .phoneBack)
 
-        case .automatic:
+        case .automatic, .glasses:
             if GlassesManager.shared.isRegistered,
                GlassesManager.shared.connectedDevice != nil,
                let image = await captureFromGlasses(keepStreaming: keepGlassesStreaming) {
@@ -72,6 +69,7 @@ final class VisionCaptureService {
                 return CapturedImage(image: image, source: .glasses)
             }
 
+            try Task.checkCancellation()
             DiagnosticLogger.shared.log("Vision", "Glasses unavailable; falling back to iPhone camera")
             let image = try await PhoneCameraService.shared.capturePhoto(position: .back)
             DiagnosticLogger.shared.log("Vision", "Captured image source=phone_back")
@@ -83,29 +81,45 @@ final class VisionCaptureService {
         let glasses = GlassesManager.shared
         guard glasses.isRegistered, glasses.connectedDevice != nil else { return nil }
 
-        let wasStreaming = glasses.isStreaming
-        if !glasses.isStreaming {
-            await glasses.startStreaming()
-        }
-        guard glasses.isStreaming else { return nil }
+        // A tool borrows an existing session. It must never clear its shared frame or stop it.
+        let startedHere = !glasses.hasCameraSession
+        let requestedAt = Date()
+        let generation: UUID
+        if startedHere {
+            guard let startedGeneration = await glasses.startStreaming() else { return nil }
+            generation = startedGeneration
+        } else { generation = glasses.streamGeneration }
+        guard glasses.hasCameraSession, glasses.streamGeneration == generation else { return nil }
 
-        // Require a fresh frame rather than reusing a stale image from an earlier stream.
-        glasses.lastFrame = nil
-        var frame: UIImage?
-        for _ in 0..<40 { // up to ~4 seconds
-            if let current = glasses.lastFrame {
-                frame = current
-                break
+        var image: UIImage?
+        // Readiness is separate from frame delivery: start() requested is not .streaming.
+        for _ in 0..<40 {
+            if glasses.isCameraReady || Task.isCancelled || !glasses.hasCameraSession || glasses.streamGeneration != generation { break }
+            do { try await Task.sleep(nanoseconds: 100_000_000) } catch { break }
+        }
+        if glasses.isCameraReady && !Task.isCancelled && glasses.streamGeneration == generation {
+            // Request a fresh still as well: some firmware delivers JPEG photos while raw
+            // frame conversion fails. Do not reuse/clear another consumer's cached photo.
+            if glasses.lastFrameTime.timeIntervalSince(requestedAt) < -1 {
+                await glasses.capturePhoto()
             }
-            try? await Task.sleep(nanoseconds: 100_000_000)
+            for _ in 0..<40 {
+                if Task.isCancelled || !glasses.hasCameraSession || glasses.streamGeneration != generation { break }
+                if glasses.lastFrameTime >= requestedAt, let frame = glasses.lastFrame {
+                    image = frame
+                    break
+                }
+                if glasses.lastPhotoTime >= requestedAt, let data = glasses.lastPhotoData,
+                   let photo = UIImage(data: data) {
+                    image = photo
+                    break
+                }
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { break }
+            }
         }
-
-        if frame == nil && !wasStreaming && glasses.isStreaming {
-            await glasses.stopStreaming()
-        } else if !keepStreaming && glasses.isStreaming {
-            await glasses.stopStreaming()
-        }
-
-        return frame
+        if CameraPolicy.shouldStopStream(startedHere: startedHere, keepStreaming: keepStreaming, sameSession: glasses.streamGeneration == generation),
+           glasses.hasCameraSession { await glasses.stopStreaming() }
+        DiagnosticLogger.shared.log("Vision", "Glasses capture ready=\(glasses.isCameraReady) image=\(image != nil) borrowed=\(!startedHere)")
+        return image
     }
 }

@@ -82,6 +82,12 @@ final class GeminiLiveService: ObservableObject {
 
     // MARK: - Video Throttling
 
+    private var cameraFrameGate = CameraFrameGate()
+    private var cameraToolTask: Task<Void, Never>?
+    private var cameraOperation = CameraOperationIdentity()
+    private var cameraEpoch = UUID()
+    private var videoSent = 0
+    private var videoSendFailures = 0
     private var lastFrameTime: Date = .distantPast
     private var frameInterval: TimeInterval {
         1.0 / Double(videoFPS)
@@ -213,6 +219,7 @@ final class GeminiLiveService: ObservableObject {
 
     /// Close WebSocket
     private func closeWebSocket() {
+        resetCameraTurn()
         receiveTask?.cancel()
         receiveTask = nil
 
@@ -316,6 +323,7 @@ final class GeminiLiveService: ObservableObject {
         Your name is JARVIS. You are the user's personal AI assistant for Project JARVIS, integrated with their iPhone and smart glasses. Do not present yourself as Gemini or as a generic virtual assistant. If the user asks who or what JARVIS is, explain naturally that J.A.R.V.I.S. from Iron Man is the fictional inspiration for the name and concept, while you are this user's real personal-assistant project — you are not the fictional Stark system.
 
         You can see what the user sees when a glasses/camera stream is actually available. Never pretend you can currently see something if no image or video frame was provided.
+        CAMERA: glasses are always the default, with iPhone rear fallback if unavailable or unable to supply an image. For a scene question without a usable live frame, CALL camera_capture with auto. If the user explicitly requests the phone/front/rear camera, CALL camera_capture with that source before describing anything; never claim to switch cameras without calling it. A phone override applies to that capture only. Use the actual source in its result, including any phone fallback. Self-recognition alone does not select the selfie camera. Never call face_recognition to describe a general scene; that tool only manages private face memory.
 
         Default to 1–3 short spoken sentences, natural and conversational. Expand only when the user explicitly asks for detail. The user is using JARVIS hands-free and expects quick answers.
 
@@ -372,7 +380,15 @@ final class GeminiLiveService: ObservableObject {
     /// googleSearch here breaks setup for the project's free-tier API key. Current-information
     /// requests are handled by the native `web_search` bridge instead.
     private func buildToolDeclarations() -> [[String: Any]] {
-        [["functionDeclarations": NativeToolRegistry.shared.geminiDeclarations]]
+        [["functionDeclarations": NativeToolRegistry.shared.geminiDeclarations + [[
+            "name": "camera_capture",
+            "description": "Capture a current image for general scene questions, or when the user explicitly selects a phone camera. Defaults to glasses first with phone rear fallback; report the actual source returned. This is not face recognition. Phone override applies only to this capture.",
+            "parameters": [
+                "type": "object",
+                "properties": ["camera_source": ["type": "string", "enum": ["auto", "glasses", "phone", "phone_front", "phone_back"]]],
+                "required": ["camera_source"]
+            ]
+        ]]]]
     }
 
     // MARK: - Send Audio
@@ -445,6 +461,7 @@ final class GeminiLiveService: ObservableObject {
     /// is user activity and asks Gemini's START_OF_ACTIVITY_INTERRUPTS policy to cut the server turn.
     /// Until that next user turn is sent, discard late PCM chunks from the response we just silenced.
     func interrupt() async {
+        resetCameraTurn()
         guard isModelSpeaking || isProcessing || fallbackAudioPlayback.isPlaying else { return }
 
         pendingTurnComplete = false
@@ -467,25 +484,77 @@ final class GeminiLiveService: ObservableObject {
 
     // MARK: - Send Video
 
-    /// Send video frame to Gemini (throttled)
-    func sendVideoFrame(imageData: Data) {
-        guard connectionState.isUsable else { return }
+    private func resetCameraTurn() {
+        if cameraOperation.active != nil {
+            cameraToolTask?.cancel()
+            cameraToolTask = nil
+            cameraOperation.cancel()
+            if let name = currentToolName {
+                isToolRunning = false
+                currentToolName = nil
+                onToolStatusChanged?(name, false)
+            }
+        }
+        cameraEpoch = UUID()
+        cameraFrameGate.finishTurn()
+    }
 
+    private func videoMessage(_ data: Data) -> [String: Any] {
+        ["realtimeInput": ["video": ["mimeType": "image/jpeg", "data": data.base64EncodedString()]]]
+    }
+
+    /// Send live frames only while no tool snapshot owns the visual turn.
+    func sendVideoFrame(imageData: Data) {
+        guard connectionState.isUsable, cameraFrameGate.allowsLiveFrames else { return }
         let now = Date()
         guard now.timeIntervalSince(lastFrameTime) >= frameInterval else { return }
         lastFrameTime = now
-
-        let message: [String: Any] = [
-            "realtimeInput": [
-                "video": [
-                    "mimeType": "image/jpeg",
-                    "data": imageData.base64EncodedString()
-                ]
-            ]
-        ]
-
+        let epoch = cameraEpoch
+        let socket = webSocket
         Task {
-            try? await sendJSON(message)
+            // Recheck inside the queued task: an explicit phone capture may have started.
+            guard !Task.isCancelled, self.cameraEpoch == epoch,
+                  self.cameraFrameGate.allowsLiveFrames, self.webSocket === socket,
+                  self.connectionState.isUsable else { return }
+            do {
+                try await self.sendJSON(self.videoMessage(imageData))
+                self.videoSent += 1
+                if self.videoSent == 1 || self.videoSent % 30 == 0 {
+                    DiagnosticLogger.shared.log("Gemini", "Video frames sent=\(self.videoSent) failed=\(self.videoSendFailures)")
+                }
+            } catch {
+                self.videoSendFailures += 1
+                if self.videoSendFailures == 1 || self.videoSendFailures % 30 == 0 {
+                    DiagnosticLogger.shared.log("Gemini", "Video frame send failed count=\(self.videoSendFailures)")
+                }
+            }
+        }
+    }
+
+    private func captureCameraForTool(args: [String: Any]) async throws -> String {
+        cameraEpoch = UUID()
+        let epoch = cameraEpoch
+        let socket = webSocket
+        cameraFrameGate.beginCapture()
+        do {
+            let source = CameraPolicy.Source(rawValue: args["camera_source"] as? String ?? "auto") ?? .automatic
+            let capture = try await VisionCaptureService.shared.captureImage(preferred: source)
+            try Task.checkCancellation()
+            guard cameraEpoch == epoch, webSocket === socket, connectionState.isUsable else {
+                throw CancellationError()
+            }
+            guard let jpeg = capture.image.jpegData(compressionQuality: 0.75) else {
+                throw VisionCaptureService.CaptureError.noCameraImage
+            }
+            // Await delivery before the function result: the model must receive the image first.
+            try await sendJSON(videoMessage(jpeg))
+            try Task.checkCancellation()
+            guard cameraEpoch == epoch, webSocket === socket else { throw CancellationError() }
+            DiagnosticLogger.shared.log("Gemini", "Camera tool image sent source=\(capture.source.rawValue)")
+            return "Current image sent. Actual camera source: \(capture.source.rawValue). Describe only this image for this request."
+        } catch {
+            if cameraEpoch == epoch, error is CancellationError { resetCameraTurn() }
+            throw error
         }
     }
 
@@ -585,9 +654,30 @@ final class GeminiLiveService: ObservableObject {
             return
         }
 
-        // Tool call
+        if let cancellation = json["toolCallCancellation"] as? [String: Any] {
+            let ids = Set(cancellation["ids"] as? [String] ?? [])
+            if cameraOperation.isCancelled(by: ids) {
+                resetCameraTurn()
+                isProcessing = false
+            }
+            return
+        }
+        // Only camera batches run outside the receive loop, so barge-in/cancellation remains
+        // observable while UIKit/DAT is acquiring a photo. Existing native tooling is unchanged.
         if let toolCall = json["toolCall"] as? [String: Any] {
-            await handleToolCall(toolCall)
+            if cameraOperation.active != nil { resetCameraTurn() }
+            let calls = toolCall["functionCalls"] as? [[String: Any]] ?? []
+            if calls.contains(where: { $0["name"] as? String == "camera_capture" }) {
+                let id = cameraOperation.begin(callIDs: Set(calls.compactMap { $0["id"] as? String }))
+                cameraToolTask = Task { [weak self] in
+                    guard let self else { return }
+                    await self.handleToolCall(toolCall, cameraBatch: id)
+                    if self.cameraOperation.isCurrent(id) {
+                        self.cameraOperation.cancel()
+                        self.cameraToolTask = nil
+                    }
+                }
+            } else { await handleToolCall(toolCall) }
             return
         }
 
@@ -621,6 +711,7 @@ final class GeminiLiveService: ObservableObject {
     private func handleServerContent(_ content: [String: Any]) {
         // Interrupted content should stop queued audio immediately.
         if content["interrupted"] as? Bool == true {
+            resetCameraTurn()
             pendingTurnComplete = false
             ignoreNextTurnComplete = false
             isModelSpeaking = false
@@ -727,6 +818,7 @@ final class GeminiLiveService: ObservableObject {
 
         // Turn complete comes LAST so we never discard sibling audio/transcription fields.
         if content["turnComplete"] as? Bool == true {
+            resetCameraTurn()
             MetricsCollector.shared.markGenerationDone()
             // A locally interrupted response may still report its final boundary. Consume that
             // boundary without reopening conversation mode in the middle of the user's barge-in.
@@ -780,7 +872,11 @@ final class GeminiLiveService: ObservableObject {
 
     /// Handle a tool call from Gemini: run each requested native tool and send the results back as a
     /// `toolResponse` so the model can speak a grounded confirmation in the same turn.
-    private func handleToolCall(_ toolCall: [String: Any]) async {
+    private func handleToolCall(_ toolCall: [String: Any], cameraBatch: UUID? = nil) async {
+        func batchIsCurrent() -> Bool {
+            cameraBatch.map { cameraOperation.isCurrent($0) } ?? true
+        }
+        guard !Task.isCancelled, batchIsCurrent() else { return }
         guard let calls = toolCall["functionCalls"] as? [[String: Any]], !calls.isEmpty else {
             print("[GeminiLive] toolCall with no functionCalls: \(toolCall)")
             return
@@ -789,6 +885,7 @@ final class GeminiLiveService: ObservableObject {
         // Function calling in Gemini Live is synchronous: keep the realtime session open and
         // mark the turn as busy until every tool result has been sent back to the same socket.
         isProcessing = true
+        let toolSocket = webSocket
         var responses: [[String: Any]] = []
         for call in calls {
             guard let name = call["name"] as? String else { continue }
@@ -798,7 +895,24 @@ final class GeminiLiveService: ObservableObject {
             onToolStatusChanged?(name, true)
             DiagnosticLogger.shared.log("Gemini", "Tool running in persistent session: \(name)")
 
-            let result = await NativeToolRegistry.shared.execute(name: name, args: args)
+            let result: String
+            if name == "camera_capture" {
+                do {
+                    result = try await captureCameraForTool(args: args)
+                } catch is CancellationError {
+                    guard webSocket === toolSocket, batchIsCurrent() else { return }
+                    isToolRunning = false
+                    currentToolName = nil
+                    onToolStatusChanged?(name, false)
+                    return
+                } catch {
+                    result = "Camera capture failed; no image was provided. Do not claim to see the scene."
+                    DiagnosticLogger.shared.log("Gemini", "Camera tool capture/send failed")
+                }
+            } else {
+                result = await NativeToolRegistry.shared.execute(name: name, args: args)
+            }
+            guard !Task.isCancelled, webSocket === toolSocket, batchIsCurrent() else { return }
 
             isToolRunning = false
             currentToolName = nil
@@ -808,10 +922,12 @@ final class GeminiLiveService: ObservableObject {
             responses.append(response)
         }
 
-        guard !responses.isEmpty else { return }
+        guard !responses.isEmpty, !Task.isCancelled, webSocket === toolSocket, batchIsCurrent() else { return }
         do {
             try await sendJSON(["toolResponse": ["functionResponses": responses]])
         } catch {
+            guard webSocket === toolSocket, batchIsCurrent() else { return }
+            resetCameraTurn()
             print("[GeminiLive] Failed to send toolResponse: \(error)")
             DiagnosticLogger.shared.log("Tool", "Failed to send toolResponse: \(error.localizedDescription)")
         }

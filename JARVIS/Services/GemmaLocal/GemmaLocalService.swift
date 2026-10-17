@@ -749,7 +749,7 @@ final class GemmaLocalService: ObservableObject {
         // prompt). Anchor it to THIS frame and let it admit uncertainty rather than guess — this is
         // what stops the live feed from narrating stale/blurry glimpses when the head is moving.
         if visionImage != nil {
-            brevity += " You are looking through the glasses camera right now. Describe ONLY what is clearly and currently visible in this exact image. If it's blurry, dark, partly out of frame, or you're not certain what something is, say so briefly instead of guessing — never mention objects you aren't confident are actually present."
+            brevity += " You are looking at the current image from the selected camera. Describe ONLY what is clearly and currently visible in this exact image. If it's blurry, dark, partly out of frame, or you're not certain what something is, say so briefly instead of guessing — never mention objects you aren't confident are actually present."
         }
         let userSys = SettingsManager.shared.settings.userPrompt
         var systemContent = userSys.isEmpty ? brevity : "\(userSys)\n\n\(brevity)"
@@ -884,7 +884,7 @@ final class GemmaLocalService: ObservableObject {
         - "none": the command is NOT about recognizing, remembering, or naming a real person
 
         Choose camera_source:
-        - "phone_front" when the wearer asks to recognize themselves, says "olhe para mim"/"me reconheça", or explicitly asks for front/frontal/selfie camera
+        - "phone_front" only when the wearer explicitly asks for front/frontal/selfie camera
         - "phone_back" when they explicitly ask for rear/back/traseira camera
         - "glasses" when they explicitly ask for the glasses camera
         - "auto" otherwise

@@ -12,7 +12,7 @@ options:
 settings:
   base:
     MARKETING_VERSION: "2.10.0"
-    CURRENT_PROJECT_VERSION: "44"
+    CURRENT_PROJECT_VERSION: "45"
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: ${DEVELOPMENT_TEAM}
     CODE_SIGN_STYLE: Automatic
@@ -39,6 +39,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
+      - path: JARVIS/Services/Vision/CameraPolicy.swift
       - path: JARVIS/Utilities/TextChunking.swift
       - path: JARVIS/Utilities/VoiceStopMatching.swift
       - path: JARVIS/Services/Documents/DocumentChunking.swift
@@ -50,6 +51,7 @@ targets:
       - path: JARVIS/Services/NativeTools/MemoryTool.swift
       - path: JARVIS/Views/Settings/MemoriesViewModel.swift
       - path: JARVISTests/DocumentChunkingTests.swift
+      - path: JARVISTests/CameraPolicyTests.swift
       - path: JARVISTests/TextChunkingTests.swift
       - path: JARVISTests/VoiceStopMatchingTests.swift
       - path: JARVISTests/BrainModelsTests.swift

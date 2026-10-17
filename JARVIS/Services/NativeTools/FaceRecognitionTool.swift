@@ -6,7 +6,7 @@ import Foundation
 struct FaceRecognitionTool: NativeTool {
     let name = "face_recognition"
     let description = """
-    Recognize or remember a real person physically in view using JARVIS's private on-device face memory.     Use action 'identify' when the user asks who the person currently in front of the camera is;     'remember' when they explicitly ask to save that person's face under a provided name;     'forget' to delete a saved person; and 'list' to list known people.     Never use this to identify celebrities/public figures from general knowledge or the web.     The image is processed on-device and is not sent to the model. Camera source defaults to Ray-Ban glasses when connected, otherwise the iPhone rear camera. If the user asks to recognize themselves / "olhe para mim" / "me reconheça", or explicitly asks for câmera frontal/front camera/selfie camera, use phone_front. If they explicitly ask for câmera traseira/rear/back camera, use phone_back.
+    Recognize or remember a real person physically in view using JARVIS's private on-device face memory.     Use action 'identify' when the user asks who the person currently in front of the camera is;     'remember' when they explicitly ask to save that person's face under a provided name;     'forget' to delete a saved person; and 'list' to list known people.     Never use this to identify celebrities/public figures from general knowledge or the web.     The image is processed on-device and is not sent to the model. Camera source defaults to Ray-Ban glasses when connected, otherwise the iPhone rear camera. Only if the user explicitly asks for câmera frontal/front camera/selfie camera, use phone_front. Self-recognition alone does not change the default camera. Do not use this tool for general scene description; it returns face-memory results, not an image to the model. If they explicitly ask for câmera traseira/rear/back camera, use phone_back.
     """
 
     let parametersSchema: [String: Any] = [
@@ -24,7 +24,7 @@ struct FaceRecognitionTool: NativeTool {
             "camera_source": [
                 "type": "string",
                 "enum": ["auto", "glasses", "phone", "phone_front", "phone_back"],
-                "description": "Optional. phone keeps legacy rear-camera behavior. Use phone_front for câmera frontal/front/selfie or when the wearer asks to recognize themselves; phone_back for câmera traseira/rear/back; otherwise auto."
+                "description": "Optional. phone keeps legacy rear-camera behavior. Use phone_front for câmera frontal/front/selfie only when explicitly requested; phone_back for câmera traseira/rear/back; otherwise auto."
             ]
         ],
         "required": ["action"]
@@ -65,7 +65,7 @@ struct FaceRecognitionTool: NativeTool {
             await MainActor.run {
                 DiagnosticLogger.shared.log("Face", "Tool identify source=\(captured.source.rawValue)")
             }
-            return await FaceRecognitionService.shared.identify(in: captured.image)
+            return "Camera source: \(captured.source.rawValue). " + (await FaceRecognitionService.shared.identify(in: captured.image))
 
         case "remember":
             guard !name.isEmpty else { return "Qual é o nome da pessoa que devo lembrar?" }
@@ -73,7 +73,7 @@ struct FaceRecognitionTool: NativeTool {
             await MainActor.run {
                 DiagnosticLogger.shared.log("Face", "Tool remember nameProvided=yes source=\(captured.source.rawValue)")
             }
-            return await FaceRecognitionService.shared.rememberFace(name: name, from: captured.image)
+            return "Camera source: \(captured.source.rawValue). " + (await FaceRecognitionService.shared.rememberFace(name: name, from: captured.image))
 
         default:
             return "Use identify, remember, forget ou list."

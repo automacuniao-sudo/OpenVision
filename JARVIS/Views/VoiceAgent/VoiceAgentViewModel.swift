@@ -74,6 +74,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
     /// Frame counter for logging
     private var videoFrameCount: Int = 0
+    private var lastRoutedVideoTime: Date = .distantPast
 
     var voiceStatusText: String {
         if errorMessage != nil && !isVoiceReady { return "Microfone: indisponível" }
@@ -1423,13 +1424,6 @@ final class VoiceAgentViewModel: ObservableObject {
             return
         }
 
-        // Setup video frame routing to the live backend
-        glassesManager.onVideoFrame = { [weak service] image in
-            if let jpegData = image.jpegData(compressionQuality: 0.6) {
-                service?.sendVideoFrame(imageData: jpegData)
-            }
-        }
-
         isLiveVideoMode = true
         agentState = .liveVideo
 
@@ -1496,11 +1490,18 @@ final class VoiceAgentViewModel: ObservableObject {
     /// Answer a spoken question in local live video mode using a fresh, settled glasses frame.
     private func handleLocalLiveVideoCommand(_ command: String) async {
         agentState = .thinking
-        // Let head motion settle and grab the freshest frame, so we describe the CURRENT view
-        // rather than a stale/motion-blurred one the Bluetooth stream delivered a beat ago.
-        guard let frame = await freshestGlassesFrame(settle: 0.3, maxWait: 1.0),
-              let jpeg = frame.jpegData(compressionQuality: 0.6) else {
-            speakResponse("I couldn't get a clear view just now — hold still a second and ask again.")
+        let captured: VisionCaptureService.CapturedImage
+        do {
+            captured = try await VisionCaptureService.shared.captureImage(
+                preferred: CameraPolicy.source(for: command), keepGlassesStreaming: true
+            )
+        } catch {
+            speakResponse("Não consegui obter uma imagem agora.")
+            agentState = .liveVideo
+            return
+        }
+        guard let jpeg = captured.image.jpegData(compressionQuality: 0.6) else {
+            speakResponse("Não consegui preparar a imagem agora.")
             agentState = .liveVideo
             return
         }
@@ -1513,24 +1514,6 @@ final class VoiceAgentViewModel: ObservableObject {
             speakResponse("Sorry, that didn't work. \(error.localizedDescription)")
         }
         if isLiveVideoMode { agentState = .liveVideo }
-    }
-
-    /// Wait a brief `settle` for head motion to stop, then return the freshest camera frame that's
-    /// genuinely recent (stream not stalled). Falls back to whatever frame we have after `maxWait`.
-    /// This is the "current view, not a stale glimpse" grab for live video.
-    private func freshestGlassesFrame(settle: TimeInterval, maxWait: TimeInterval) async -> UIImage? {
-        try? await Task.sleep(nanoseconds: UInt64(settle * 1_000_000_000))
-        let deadline = Date().addingTimeInterval(maxWait)
-        while Date() < deadline {
-            // Accept only a frame received within the last 500ms — under heavy motion the BT stream
-            // throttles and lastFrame goes stale; wait for a fresh one instead of describing it.
-            if Date().timeIntervalSince(glassesManager.lastFrameTime) < 0.5,
-               let f = glassesManager.lastFrame {
-                return f
-            }
-            try? await Task.sleep(nanoseconds: 80_000_000)   // 80ms poll
-        }
-        return glassesManager.lastFrame   // fallback: better an old frame than nothing
     }
 
     /// Stop live video mode
@@ -1556,11 +1539,6 @@ final class VoiceAgentViewModel: ObservableObject {
         // Stop glasses streaming
         if glassesManager.isStreaming {
             await glassesManager.stopStreaming()
-        }
-
-        // Restore video frame callback to Gemini Vision
-        glassesManager.onVideoFrame = { [weak self] image in
-            self?.geminiVision.sendVideoFrame(image)
         }
 
         isLiveVideoMode = false
@@ -1759,28 +1737,14 @@ final class VoiceAgentViewModel: ObservableObject {
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let frontCameraCues = [
-            "camera frontal", "pela frontal", "use a frontal", "frontal do iphone",
-            "front camera", "selfie camera", "selfie"
-        ]
-        let rearCameraCues = [
-            "camera traseira", "pela traseira", "use a traseira", "traseira do iphone",
-            "rear camera", "back camera"
-        ]
         let selfFaceCues = [
             "olhe para mim", "olha para mim", "me reconheca", "reconheca meu rosto",
             "reconheca a minha face", "veja meu rosto", "veja minha face", "me veja", "para me ver",
             "look at me", "recognize me", "recognise me", "my face"
         ]
-        let explicitFront = frontCameraCues.contains(where: normalized.contains)
-        let explicitRear = rearCameraCues.contains(where: normalized.contains)
         let selfDirected = selfFaceCues.contains(where: normalized.contains)
-
-        func preferredCamera(defaultForSelf: Bool = false) -> VisionCaptureService.CaptureSource {
-            if explicitFront { return .phoneFront }
-            if explicitRear { return .phoneBack }
-            if selfDirected || defaultForSelf { return .phoneFront }
-            return .automatic
+        func preferredCamera() -> VisionCaptureService.CaptureSource {
+            CameraPolicy.source(for: command)
         }
 
         func suffix(after markers: [String]) -> String? {
@@ -1841,14 +1805,12 @@ final class VoiceAgentViewModel: ObservableObject {
             "execute o reconhecimento facial", "execute reconhecimento facial"
         ]
         if faceRecognitionCommands.contains(where: normalized.contains) {
-            // A generic "activate face recognition" on the phone is treated as a selfie/owner
-            // check. Explicit glasses/rear commands still override this below/above.
-            let source: VisionCaptureService.CaptureSource = explicitRear ? .phoneBack : .phoneFront
+            let source = preferredCamera()
             return .init(action: "identify", name: "", cameraSource: source)
         }
 
         if selfDirected {
-            return .init(action: "identify", name: "", cameraSource: preferredCamera(defaultForSelf: true))
+            return .init(action: "identify", name: "", cameraSource: preferredCamera())
         }
 
         return nil
@@ -1984,29 +1946,6 @@ final class VoiceAgentViewModel: ObservableObject {
 
     // MARK: - Photo capture
 
-    /// Get a fresh UIImage frame from the glasses camera, then turn the camera off
-    /// ("click and go") — unless we're in live video mode.
-    private func currentGlassesImage() async -> UIImage? {
-        guard glassesManager.isRegistered else { return nil }
-        if !glassesManager.isStreaming { await glassesManager.startStreaming() }
-        var frame: UIImage?
-        for _ in 0..<40 {   // up to ~4s for a fresh frame
-            if let f = glassesManager.lastFrame { frame = f; break }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-        if frame == nil { frame = glassesManager.lastFrame }
-        if glassesManager.isStreaming && !isLiveVideoMode {
-            await glassesManager.stopStreaming()
-        }
-        // Do NOT touch the audio stack here. Tearing down / rebuilding the recognizer around the
-        // camera is what broke the HFP mic: every rebuild forces a fresh Bluetooth SCO negotiation,
-        // which the glasses can't service right after streaming (mic stays deaf for tens of seconds,
-        // with an audible reconnect chirp per attempt). OpenGlasses keeps its wake-word engine + mic
-        // tap alive straight through photo capture — audio just gaps during the stream and resumes
-        // into the same running engine. We now do the same; see restartRecognition()'s engine check.
-        return frame
-    }
-
     /// Send a prompt (optionally with a photo) to whichever backend is currently selected.
     private func sendPromptToActiveBackend(_ prompt: String, imageData: Data?) async throws {
         let backend = AIBackendRegistry.backend(for: settingsManager.settings.aiBackend)
@@ -2016,52 +1955,16 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     private func captureAndSendPhoto(withPrompt prompt: String) async {
-        // Try to get an image from various sources
         var imageData: Data?
-        var startedStreamingForPhoto = false
-
-        // Start streaming if glasses are registered but not streaming. `startStreaming()` only
-        // returns after `session.start()` completes (isStreaming is already true here), so the
-        // old "poll up to 3s for isStreaming" loop + fixed 500ms sleep were dead weight that just
-        // kept the LED on longer. freshLiveFrame() below already waits for the first real frame,
-        // so drop the artificial delay entirely.
-        if glassesManager.isRegistered && !glassesManager.isStreaming {
-            print("[VoiceAgent] Starting glasses camera stream for photo...")
-            await glassesManager.startStreaming()
-            startedStreamingForPhoto = true
-        }
-
-        // Capture straight from the live video stream. The glasses' one-shot photo API
-        // (session.capturePhoto) doesn't reliably deliver on this model/SDK — it times out
-        // after 5s — whereas a live frame is available immediately. freshLiveFrame() ensures
-        // the stream is running, waits for a fresh frame, and restarts a stalled stream.
-        imageData = await freshLiveFrame()
-
-        // No Ray-Ban frame (not connected, permission/session failure, etc.) → use the phone camera.
-        // This also makes photo/vision testing possible before the glasses camera path is ready.
-        if imageData == nil {
-            do {
-                let phoneImage = try await PhoneCameraService.shared.capturePhoto()
-                imageData = phoneImage.jpegData(compressionQuality: 0.85)
-                if imageData != nil {
-                    DiagnosticLogger.shared.log("Vision", "Photo fallback captured with iPhone rear camera")
-                }
-            } catch {
-                DiagnosticLogger.shared.log("Vision", "iPhone camera fallback failed: \(error.localizedDescription)")
-            }
-        }
-
-        NSLog("[OV] captureAndSendPhoto result: %@ (streaming=%@, registered=%@)",
-              imageData == nil ? "NO IMAGE" : "\(imageData!.count) bytes",
-              glassesManager.isStreaming ? "yes" : "no",
-              glassesManager.isRegistered ? "yes" : "no")
-
-        // "Click and go": now that we have the photo, turn the glasses camera off immediately —
-        // before the (multi-second) model inference — so the LED doesn't stay on. Repeat photo
-        // commands restart the camera reliably via freshLiveFrame(). Skip in live video mode.
-        if imageData != nil && glassesManager.isStreaming && !isLiveVideoMode {
-            NSLog("[OV] photo captured — stopping camera (click and go)")
-            await glassesManager.stopStreaming()
+        do {
+            let capture = try await VisionCaptureService.shared.captureImage(
+                preferred: CameraPolicy.source(for: prompt),
+                keepGlassesStreaming: isLiveVideoMode
+            )
+            imageData = capture.image.jpegData(compressionQuality: 0.85)
+            DiagnosticLogger.shared.log("Vision", "Photo for backend source=\(capture.source.rawValue) encoded=\(imageData != nil)")
+        } catch {
+            DiagnosticLogger.shared.log("Vision", "Photo capture failed")
         }
 
         // Send with or without image
@@ -2084,65 +1987,7 @@ final class VoiceAgentViewModel: ObservableObject {
             errorMessage = "Failed to send: \(error.localizedDescription)"
             agentState = isSessionActive ? .listening : .idle
 
-            // Stop streaming on error if we started it for this photo
-            if startedStreamingForPhoto && glassesManager.isStreaming {
-                await glassesManager.stopStreaming()
-            }
         }
-    }
-
-    /// Capture photo from glasses and return the data
-    private func capturePhotoFromGlasses() async -> Data? {
-        // Clear any stale photo before requesting a fresh capture.
-        glassesManager.lastPhotoData = nil
-        NSLog("[OV] capturePhotoFromGlasses: requesting capture (streaming=%@)", glassesManager.isStreaming ? "yes" : "no")
-        await glassesManager.capturePhoto()
-
-        // Wait for photo data to appear (poll for up to 5 seconds)
-        for _ in 0..<50 {
-            if let photoData = glassesManager.lastPhotoData {
-                glassesManager.lastPhotoData = nil
-                NSLog("[OV] Photo captured: %d bytes", photoData.count)
-                return photoData
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-        }
-
-        NSLog("[OV] Photo capture TIMED OUT after 5s")
-        return nil
-    }
-
-    /// Force a fresh live video frame, restarting the stream if it has stalled.
-    /// More reliable than the one-shot photo capture for repeated requests in a session.
-    private func freshLiveFrame() async -> Data? {
-        guard glassesManager.isRegistered else { return nil }
-        if !glassesManager.isStreaming {
-            await glassesManager.startStreaming()
-        }
-        // Wait for a NEW frame (clear first so we don't reuse a stale one).
-        glassesManager.lastFrame = nil
-        for _ in 0..<25 { // up to ~2.5s
-            if let f = glassesManager.lastFrame {
-                NSLog("[OV] fresh live frame acquired")
-                return f.jpegData(compressionQuality: 0.8)
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-        // Stream appears stalled — restart it once and retry.
-        NSLog("[OV] live frame stalled — restarting stream")
-        await glassesManager.stopStreaming()
-        try? await Task.sleep(nanoseconds: 400_000_000)
-        await glassesManager.startStreaming()
-        glassesManager.lastFrame = nil
-        for _ in 0..<30 { // up to ~3s
-            if let f = glassesManager.lastFrame {
-                NSLog("[OV] fresh live frame acquired after restart")
-                return f.jpegData(compressionQuality: 0.8)
-            }
-            try? await Task.sleep(nanoseconds: 100_000_000)
-        }
-        NSLog("[OV] freshLiveFrame: STILL no frame after restart")
-        return nil
     }
 
     // MARK: - Glasses Video Integration
@@ -2151,19 +1996,36 @@ final class VoiceAgentViewModel: ObservableObject {
     private func setupGlassesCallbacks() {
         print("[VoiceAgent] Setting up glasses video callbacks...")
 
-        // Connect video frames from glasses to Gemini Vision (for live feed)
-        // Note: GeminiVisionService.sendVideoFrame already throttles to 1fps
+        // One callback resolves the active destination on every frame. Dedicated modes take
+        // precedence, and ending them immediately restores the conversational Gemini route.
         glassesManager.onVideoFrame = { [weak self] image in
             guard let self else { return }
-            // Send frame to Gemini Vision for live analysis
-            self.geminiVision.sendVideoFrame(image)
-
-            // Log periodically (every 30 frames = ~1 second at 30fps)
-            Task { @MainActor in
-                self.videoFrameCount += 1
-                if self.videoFrameCount % 30 == 0 {
-                    print("[VoiceAgent] Video frames processed: \(self.videoFrameCount)")
+            let route = CameraPolicy.frameRoute(
+                dedicatedLive: self.isLiveVideoMode && self.activeLiveService != nil,
+                conversationalGemini: self.isSessionActive && self.settingsManager.settings.aiBackend == .geminiLive
+            )
+            // Throttle before JPEG encoding; normal conversation must not encode at 30 fps.
+            if route != .preview {
+                let now = Date()
+                let interval = 1.0 / Double(max(1, self.settingsManager.settings.geminiVideoFPS))
+                guard now.timeIntervalSince(self.lastRoutedVideoTime) >= interval else { return }
+                self.lastRoutedVideoTime = now
+            }
+            switch route {
+            case .dedicatedLive:
+                if let data = image.jpegData(compressionQuality: 0.6) {
+                    self.activeLiveService?.sendVideoFrame(imageData: data)
                 }
+            case .conversationalGemini:
+                if let data = image.jpegData(compressionQuality: 0.6) {
+                    self.geminiLive.sendVideoFrame(imageData: data)
+                }
+            case .preview:
+                self.geminiVision.sendVideoFrame(image)
+            }
+            self.videoFrameCount += 1
+            if self.videoFrameCount == 1 || self.videoFrameCount % 150 == 0 {
+                DiagnosticLogger.shared.log("Vision", "Frames routed=\(self.videoFrameCount) destination=\(route)")
             }
         }
 
