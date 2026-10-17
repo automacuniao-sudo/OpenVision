@@ -49,7 +49,7 @@ enum LocalAgent {
         If (and only if) the user wants a face action, reply with ONLY one JSON object and nothing else:
         - Identify the person currently in view: {"face":"identify","name":"","camera_source":"auto"}
         - Save/remember the person in view under a name: {"face":"remember","name":"THE_NAME","camera_source":"auto"}
-        - If the wearer asks to recognize themselves, says "olhe para mim"/"me reconheça", or explicitly asks for the front/selfie camera, use "camera_source":"phone_front".
+        - Only if the wearer explicitly asks for the front/selfie camera, use "camera_source":"phone_front".
         - If they explicitly ask for the rear/back camera, use "camera_source":"phone_back".
         - Forget a saved person: {"face":"forget","name":"THE_NAME"}
         - List the people you know: {"face":"list","name":""}
@@ -60,7 +60,7 @@ enum LocalAgent {
         User: who am I looking at → {"face":"identify","name":"","camera_source":"auto"}
         User: do you know this person in front of me → {"face":"identify","name":"","camera_source":"auto"}
         User: olhe para mim pela câmera frontal → {"face":"identify","name":"","camera_source":"phone_front"}
-        User: reconheça meu rosto → {"face":"identify","name":"","camera_source":"phone_front"}
+        User: reconheça meu rosto → {"face":"identify","name":"","camera_source":"auto"}
         User: identify this person using the rear camera → {"face":"identify","name":"","camera_source":"phone_back"}
         User: remember this is Sara → {"face":"remember","name":"Sara"}
         User: save his face as Alex → {"face":"remember","name":"Alex"}
