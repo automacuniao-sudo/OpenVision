@@ -134,15 +134,14 @@ jobs:
       - name: Validar configuracao Meta no app compilado
         run: python3 scripts/validate_meta_developer_config.py build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app/Info.plist
 
-      # Controlled exception for PR #22 physical validation. Remove before merge.
       - name: Verificar produto compilado
-        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-retrieval-context'
+        if: github.event_name != 'pull_request'
         run: |
           test -d build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app
           echo "JARVIS.app pronto para empacotamento"
 
       - name: Criar IPA
-        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-retrieval-context'
+        if: github.event_name != 'pull_request'
         run: |
           mkdir -p build/ipa/Payload
           cp -R build/DerivedData/Build/Products/Debug-iphoneos/JARVIS.app build/ipa/Payload/
@@ -151,7 +150,7 @@ jobs:
           zip -r JARVIS-unsigned.ipa Payload
 
       - name: Salvar IPA
-        if: github.event_name != 'pull_request' || github.head_ref == 'feature/jarvis-retrieval-context'
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v7
         with:
           name: JARVIS-iOS-unsigned
